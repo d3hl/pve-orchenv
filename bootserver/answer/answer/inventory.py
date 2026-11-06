@@ -10,6 +10,14 @@ from typing import Iterable
 import yaml
 
 _HEX12 = re.compile(r"^[0-9a-f]{12}$")
+_HOSTNAME = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+# Disk 2 is matched with ID_SERIAL="*_<serial>" (build/README.md DISK_STRATEGY); a longer
+# serial makes an accidental suffix match on another disk implausible.
+MIN_SECOND_SERIAL_LEN = 8
+
+
+def valid_hostname(name) -> bool:
+    return isinstance(name, str) and re.fullmatch(_HOSTNAME, name) is not None
 
 
 def normalize_mac(s: str) -> str:
@@ -95,6 +103,8 @@ def load_inventory(paths: list[Path]) -> Inventory:
 def lint(inv: Inventory) -> list[str]:
     errors: list[str] = []
     for h in inv.hosts.values():
+        if not valid_hostname(h.name):
+            errors.append(f"{h.name!r}: invalid hostname")
         if not h.mac:
             errors.append(f"{h.name}: missing mac")
         if not h.mgmt_ip:
@@ -116,6 +126,9 @@ def lint(inv: Inventory) -> list[str]:
         for s in h.root_disks.serials:
             if len(s) < 4 or any(c in s for c in "*?[]"):
                 errors.append(f"{h.name}: invalid serial {s!r}")
+        if len(h.root_disks.serials) == 2 and len(h.root_disks.serials[1]) < MIN_SECOND_SERIAL_LEN:
+            errors.append(f"{h.name}: second root disk serial must be >= "
+                          f"{MIN_SECOND_SERIAL_LEN} chars for exact-match safety")
         if h.cluster_role not in ("primary", "member"):
             errors.append(f"{h.name}: cluster_role must be primary or member")
     for label, values in (

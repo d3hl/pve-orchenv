@@ -1,5 +1,5 @@
 #!/bin/bash
-# First-boot hook for {{ host.name }}: tell the answer service the install finished.
+# First-boot hook: tell the answer service the install finished.
 set -euo pipefail
 curl -fsS --retry 5 --retry-delay 10 --retry-all-errors --max-time 30 \
   -X POST {{ done_url | sh_quote }}

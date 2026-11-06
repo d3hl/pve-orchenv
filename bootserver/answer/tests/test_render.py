@@ -213,3 +213,45 @@ def test_cli_render_wrong_password(tmp_path):
         cwd=ROOT, capture_output=True, text=True)
     assert r.returncode == 1
     assert "vault:" in r.stderr
+
+
+# --- fix round 1: hostname injection, disk-2 serial length ------------------
+
+BAD_NAMES = ["pve1\ntouch /tmp/pwned #", "pve 1", "PVE1", "pve_1", "-pve1", "pve1-", "", "a" * 64]
+
+
+@pytest.mark.parametrize("name", BAD_NAMES)
+def test_render_rejects_invalid_hostname(inv, name):
+    h = host(inv)
+    h.name = name
+    with pytest.raises(ValueError, match="invalid hostname"):
+        render_answer(h, inv.group_vars, SECRETS, BASE, None)
+    with pytest.raises(ValueError, match="invalid hostname"):
+        render_first_boot(h, BASE)
+
+
+def test_first_boot_script_bash_syntax(inv, tmp_path):
+    p = tmp_path / "fb.sh"
+    p.write_text(render_first_boot(inv.hosts["pve1"], BASE))
+    r = subprocess.run(["bash", "-n", str(p)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_templates_have_no_raw_hostname_comment(inv):
+    first = render_answer(inv.hosts["pve1"], inv.group_vars, SECRETS, BASE, None).splitlines()[0]
+    assert "pve1" not in first
+    assert "pve1" not in render_first_boot(inv.hosts["pve1"], BASE).splitlines()[1]
+
+
+@pytest.mark.parametrize("second", ["SER1234", "ABCD"])
+def test_short_second_serial_raises(inv, second):
+    h = host(inv)
+    h.root_disks.serials = ["SERIALA1", second]
+    with pytest.raises(DiskMismatch, match=">= 8 chars"):
+        select_disks(h, None)
+
+
+def test_eight_char_second_serial_ok(inv):
+    h = host(inv)
+    h.root_disks.serials = ["ABCD", "ABCDEFGH"]
+    assert select_disks(h, None)["filter"]["ID_SERIAL"] == "*_ABCDEFGH"

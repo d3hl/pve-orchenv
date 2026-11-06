@@ -161,3 +161,21 @@ def test_short_serial_rejected(tmp_path):
 def test_glob_in_serial_rejected(tmp_path, bad):
     inv = _inv_with(tmp_path, '["SERIALA1", "SERIALA2"]', f'["SERIALA1", "{bad}"]')
     assert any("invalid serial" in e for e in lint(inv))
+
+
+@pytest.mark.parametrize("name", ["pve1\ntouch /tmp/pwned #", "pve 1", "PVE1", "pve_1", "-x", "a" * 64])
+def test_lint_invalid_hostname(inv, name):
+    i = _c(inv)
+    i.hosts[name] = i.hosts.pop("pve2")
+    i.hosts[name].name = name
+    assert f"{name!r}: invalid hostname" in lint(i)
+
+
+def test_lint_valid_hostname(inv):
+    assert not [e for e in lint(inv) if "invalid hostname" in e]
+
+
+def test_lint_short_second_serial(inv):
+    i = _c(inv)
+    i.hosts["pve1"].root_disks.serials = ["SERIALA1", "SER1234"]
+    assert "pve1: second root disk serial must be >= 8 chars for exact-match safety" in lint(i)

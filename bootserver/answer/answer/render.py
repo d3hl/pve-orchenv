@@ -7,7 +7,7 @@ import shlex
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
-from .inventory import Host
+from .inventory import MIN_SECOND_SERIAL_LEN, Host, valid_hostname
 from .secrets import Secrets
 
 # build/README.md "DISK_STRATEGY: filter": the installer payload carries no disk list, so
@@ -36,6 +36,9 @@ def select_disks(host: Host, sysinfo: dict | None) -> dict:
         if not isinstance(s, str) or not _SERIAL_RE.match(s):
             raise DiskMismatch(f"{host.name}: serial {s!r} cannot be matched exactly "
                                "(allowed: 4+ of A-Z a-z 0-9 . _ : + -)")
+    if len(serials) == 2 and len(serials[1]) < MIN_SECOND_SERIAL_LEN:
+        raise DiskMismatch(f"{host.name}: second root disk serial must be >= "
+                           f"{MIN_SECOND_SERIAL_LEN} chars for exact-match safety")
     if len(set(serials)) != len(serials):
         raise DiskMismatch(f"{host.name}: duplicate root disk serials {serials}")
     out: dict = {"filesystem": rd.fs}
@@ -77,8 +80,15 @@ def _first_dns(dns) -> str:
     return str(dns)
 
 
+def _check_name(host: Host) -> None:
+    # The name lands in the fqdn, URL paths and a root shell script: never trust it unchecked.
+    if not valid_hostname(host.name):
+        raise ValueError(f"{host.name!r}: invalid hostname")
+
+
 def render_answer(host: Host, group_vars: dict, secrets: Secrets, base_url: str,
                   sysinfo: dict | None) -> str:
+    _check_name(host)
     gv = {**group_vars, **{k: v for k, v in host.vars.items() if k in group_vars}}
     domain = gv["domain"]
     return _env.get_template("answer.toml.j2").render(
@@ -95,5 +105,6 @@ def render_answer(host: Host, group_vars: dict, secrets: Secrets, base_url: str,
 
 
 def render_first_boot(host: Host, base_url: str) -> str:
+    _check_name(host)
     return _env.get_template("first-boot.sh.j2").render(
         host=host, done_url=f"{base_url.rstrip('/')}/done/{host.name}")
