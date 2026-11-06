@@ -11,3 +11,6 @@ __pycache__/
 .pytest_cache/
 config/vault-pass
 config/ssh/
+
+# Transient secret drop file (merged into the vault, then deleted)
+config/e2e-token-secret
