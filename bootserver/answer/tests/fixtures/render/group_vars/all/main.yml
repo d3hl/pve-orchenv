@@ -1,0 +1,8 @@
+---
+domain: lab.example
+gateway: 10.0.10.1
+dns: [10.0.10.1, 10.0.10.2]
+timezone: Asia/Ho_Chi_Minh
+keyboard: en-us
+country: vn
+cluster_name: testlab

@@ -1,0 +1,41 @@
+# Proxmox VE 9 auto-installer answer for {{ host.name }}. Generated; do not edit.
+[global]
+keyboard = {{ gv.keyboard | toml_str }}
+country = {{ gv.country | toml_str }}
+fqdn = {{ fqdn | toml_str }}
+mailto = {{ mailto | toml_str }}
+timezone = {{ gv.timezone | toml_str }}
+root-password-hashed = {{ secrets.root_password_hash | toml_str }}
+root-ssh-keys = [
+{%- for k in secrets.root_ssh_keys %}
+  {{ k | toml_str }},
+{%- endfor %}
+]
+
+[network]
+source = "from-answer"
+cidr = {{ host.mgmt_ip | toml_str }}
+gateway = {{ gv.gateway | toml_str }}
+dns = {{ dns | toml_str }}
+
+[network.filter]
+ID_NET_NAME_MAC = {{ mac_glob | toml_str }}
+
+[disk-setup]
+filesystem = {{ disk.filesystem | toml_str }}
+filter-match = {{ disk["filter-match"] | toml_str }}
+
+[disk-setup.filter]
+{%- for k, v in disk.filter.items() %}
+{{ k | toml_str }} = {{ v | toml_str }}
+{%- endfor %}
+{%- if disk.zfs is defined %}
+
+[disk-setup.zfs]
+raid = {{ disk.zfs.raid | toml_str }}
+{%- endif %}
+
+[first-boot]
+source = "from-url"
+ordering = "fully-up"
+url = {{ first_boot_url | toml_str }}

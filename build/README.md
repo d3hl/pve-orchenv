@@ -43,7 +43,28 @@ JSON, about 400 bytes; real sample in `bootserver/answer/tests/fixtures/sysinfo-
 
 ### DISK_STRATEGY: filter
 
-Because the payload has no disks, the answer service cannot map serials to device names. Answers select disks with `[disk-setup.filter]` using `ID_SERIAL` globs `*<serial>*`, in whatever multi-disk form `proxmox-auto-install-assistant validate-answer` accepts (validated per answer in the answer service tests). Device names (`disk-list`) were only used in the throwaway spike stub.
+Because the payload has no disks, the answer service cannot map serials to device names. Answers select disks with `[disk-setup.filter]`; device names (`disk-list`) were only used in the throwaway spike stub.
+
+**Rule: the filter selects exactly the listed serials, never more.** Form used (`answer/render.py` `select_disks`):
+
+```toml
+[disk-setup]
+filter-match = "any"
+[disk-setup.filter]
+"ID_SERIAL_SHORT" = "<serial 1>"   # exact
+"ID_SERIAL" = "*_<serial 2>"       # udev ID_SERIAL is "<model>_<serial>"
+```
+
+Supported: ext4/xfs with 1 disk; zfs `raid0` with 1 or 2 disks; zfs `raid1` with 2 disks. Anything else (3+ disks, raid10, raidz*, btrfs, duplicate serials, serials with characters outside `A-Za-z0-9._:+-` or shorter than 4) raises `DiskMismatch`, so no answer is served.
+
+Evidence (proxmox-auto-install-assistant 9.2.8, 2026-11-07):
+
+- The binary matches with the `glob` 0.3.2 crate: globs are anchored to the whole value, support `* ? [..] [!..]`, no `{a,b}` alternation.
+- `filter` is a map of one udev key to one string. `validate-answer` rejects a list value (`invalid type: sequence, expected a string`), `[[disk-setup.filter]]` (`expected a map`) and a repeated key (`duplicate key`). So one key can carry only one serial, and N disks need N different udev keys that hold the serial. Only `ID_SERIAL_SHORT` and `ID_SERIAL` do on every bus (NVMe, SATA, virtio-scsi); `ID_SCSI_SERIAL` exists only on SCSI. Hence at most 2 disks.
+- `device-match` against a synthetic udev database (fake `udevadm` + `/sys/block` bind mounts; see `build/check.sh`): the old form `ID_SERIAL=*SERIALA1*` selected `sda` and the decoy `sdc` (`XSERIALA1`); `*SERIALA2*` selected `sdb` and the decoy `nvme0n1` (`SERIALA2X`). The form above selected exactly the two targets and none of the decoys (super/sub-strings, prefixes, suffixes, no-serial disks). `make check` re-runs this proof every time.
+- Residual risk of the `*_<serial>` suffix: another disk whose own serial ends in `_<serial>` (or `" <serial>"`) would also match. Disk 1 uses the exact `ID_SERIAL_SHORT`, which has no such risk.
+- Missing udev keys fail safe: a disk without `ID_SERIAL_SHORT` (or without a `<model>_` prefix in `ID_SERIAL`) is not selected, so the install fails rather than touching another disk.
+- `validate-answer` exits 0 even when it reports errors; `make check` requires its success line instead.
 
 ### OVMF / virtio PXE quirk
 
@@ -52,3 +73,16 @@ The PVE OVMF firmware on the test host offers no network-boot option for virtio 
 ### Remote site
 
 10.10.10.0/24 is reached over IPsec, so the boot server runs AT the remote site, never on a PVE node it provisions (rebuilding that node would kill the boot server).
+
+## Secrets
+
+- `config/vault-pass`: Ansible Vault password (mode 0600, gitignored). Used by `make check`, Ansible and the answer service.
+- `config/ssh/pve_ed25519` (+ `.pub`): dedicated root SSH keypair for the PVE hosts (gitignored).
+- `inventory/group_vars/all/vault.yml`: committed, Vault-encrypted. Holds `vault_root_password`, `vault_root_password_hash` (`openssl passwd -6`) and `vault_root_ssh_keys` (the `.pub` above). Answers use only the hash and the keys.
+
+```
+ansible-vault view inventory/group_vars/all/vault.yml --vault-password-file config/vault-pass
+ansible-vault edit inventory/group_vars/all/vault.yml --vault-password-file config/vault-pass
+```
+
+When changing the root password, update `vault_root_password` and regenerate `vault_root_password_hash` together. `bootserver/answer/tests/fixtures/vault.yml` holds fake values only (password `test`).

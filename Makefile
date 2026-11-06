@@ -12,3 +12,10 @@ venv:
 
 test:
 	.venv/bin/pytest bootserver/answer/tests
+
+# Lint inventory, render every host's answer into cache/answers/, validate each with
+# proxmox-auto-install-assistant in the build container, and prove the disk filters
+# select exactly the listed serials (needs podman, .venv and config/vault-pass).
+.PHONY: check
+check:
+	build/check.sh
