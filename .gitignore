@@ -1,0 +1,7 @@
+dist/
+cache/
+.venv/
+ansible/artifacts/
+ansible/collections/
+config/local.env
+.superpowers/

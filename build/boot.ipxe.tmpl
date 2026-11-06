@@ -1,0 +1,4 @@
+#!ipxe
+kernel http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/vmlinuz ramdisk_size=16777216 rw quiet splash=silent proxmox-start-auto-installer
+initrd http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/initrd
+boot
