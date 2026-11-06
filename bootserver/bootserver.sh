@@ -46,6 +46,11 @@ apply() { # root tag manifest
     printf '%s\n' '---' 'apiVersion: v1' 'kind: Secret' 'metadata:' '  name: vault_password' 'data:'
     printf '  vault_password: %s\n' "$b64"
   } | podman kube play --replace -
+  # The containers use restart policy "always"; podman-restart.service brings them back after a
+  # reboot. Only for a root boot server (the remote site); a local rootless pod is started by hand.
+  if [ "$(id -u)" = 0 ] && command -v systemctl >/dev/null; then
+    systemctl enable podman-restart.service
+  fi
 }
 
 if [ "${1:-}" = apply ]; then apply "$2" "$3" "$4"; exit 0; fi
