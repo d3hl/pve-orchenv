@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build dist/{vmlinuz,initrd,boot.ipxe,ipxe.efi,undionly.kpxe}.
+# Usage: SITE=<site> build/build.sh   (or build/build.sh <site>)
+# Builds dist/<site>/{vmlinuz,initrd,boot.ipxe,ipxe.efi,undionly.kpxe,ipxe.iso} from config/<site>.env.
 # Host side: download+verify ISO, run the container. Container side (--inner): everything else.
 set -euo pipefail
 
@@ -8,13 +9,14 @@ cd "$ROOT"
 IMAGE=pve-orchenv-build
 
 if [[ "${1:-}" == "--inner" ]]; then
-  WORK="$2"   # relative to /work
-  ISO="$3"
+  SITE="$2"
+  WORK="$3"   # relative to /work
+  ISO="$4"
   cd /work
   # shellcheck disable=SC1091
   source versions.env
-  # shellcheck disable=SC1091
-  source config/local.env
+  # shellcheck disable=SC1090
+  source "config/$SITE.env"
   export BOOTSERVER_HOST BOOTSERVER_HTTP_PORT
 
   args=(prepare-iso "$ISO" --fetch-from http --url "$ANSWER_URL" --output "$WORK/prepared.iso")
@@ -58,8 +60,14 @@ fi
 
 # shellcheck disable=SC1091
 source versions.env
-# shellcheck disable=SC1091
-source config/local.env
+SITE="${1:-${SITE:-}}"
+if [[ -z "$SITE" || ! "$SITE" =~ ^[a-z0-9_-]+$ ]]; then
+  echo "usage: SITE=<site> $0   (site must match [a-z0-9_-]+; reads config/<site>.env)" >&2
+  exit 2
+fi
+[[ -f "config/$SITE.env" ]] || { echo "build: config/$SITE.env not found (copy config/$SITE.env.example)" >&2; exit 2; }
+# shellcheck disable=SC1090
+source "config/$SITE.env"
 : "${BOOTSERVER_HOST:?}" "${BOOTSERVER_HTTP_PORT:?}" "${ANSWER_URL:?}"
 
 mkdir -p cache
@@ -80,11 +88,13 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/out"
 REL="cache/$(basename "$WORK")"
 case "$ISO" in /*) ISO_IN="$ISO" ;; *) ISO_IN="/work/$ISO" ;; esac
-podman run --rm -v "$ROOT:/work:Z" "$IMAGE" /work/build/build.sh --inner "$REL" "$ISO_IN"
+podman run --rm -v "$ROOT:/work:Z" "$IMAGE" /work/build/build.sh --inner "$SITE" "$REL" "$ISO_IN"
 
-# Atomic-ish replacement: dist/ is only touched after everything succeeded.
-rm -rf "$ROOT/dist.old"
-[[ -e "$ROOT/dist" ]] && mv "$ROOT/dist" "$ROOT/dist.old"
-mv "$WORK/out" "$ROOT/dist"
-rm -rf "$ROOT/dist.old"
-echo "build: dist/ ready"
+# dist/<site>/ is only touched after everything succeeded; swap via rename.
+mkdir -p "$ROOT/dist"
+DEST="$ROOT/dist/$SITE"
+rm -rf "$DEST.old"
+[[ -e "$DEST" ]] && mv "$DEST" "$DEST.old"
+mv "$WORK/out" "$DEST"
+rm -rf "$DEST.old"
+echo "build: dist/$SITE/ ready"

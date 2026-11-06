@@ -1,3 +1,5 @@
 .PHONY: build
+# Usage: make build SITE=e2e
 build:
-	build/build.sh
+	@test -n "$(SITE)" || { echo "usage: make build SITE=<site>" >&2; exit 2; }
+	SITE=$(SITE) build/build.sh

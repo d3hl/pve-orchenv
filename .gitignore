@@ -3,5 +3,6 @@ cache/
 .venv/
 ansible/artifacts/
 ansible/collections/
-config/local.env
+config/*.env
+!config/*.env.example
 .superpowers/
