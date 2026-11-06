@@ -51,19 +51,23 @@ def _read_yaml(path: Path) -> dict:
     return data
 
 
+def _valid_serial_list(v) -> bool:
+    return isinstance(v, list) and all(isinstance(x, str) and x for x in v)
+
+
 def _build_host(name: str, raw: dict | None) -> Host:
     raw = dict(raw or {})
     rd = raw.get("root_disks") or {}
     mac = raw.get("mac")
     return Host(
         name=name,
-        install=bool(raw.get("install", False)),
+        install=raw.get("install") is True,
         mac=normalize_mac(mac) if mac else "",
         mgmt_ip=str(raw.get("mgmt_ip") or ""),
         root_disks=RootDisks(
             fs=rd.get("fs") or "",
             raid=rd.get("raid"),
-            serials=[str(x) for x in (rd.get("serials") or [])],
+            serials=list(rd["serials"]) if _valid_serial_list(rd.get("serials")) else [],
         ),
         cluster_role=raw.get("cluster_role") or "",
         vars=raw,
@@ -97,12 +101,21 @@ def lint(inv: Inventory) -> list[str]:
             errors.append(f"{h.name}: missing mgmt_ip")
         if "install" not in h.vars:
             errors.append(f"{h.name}: missing install")
+        elif not isinstance(h.vars["install"], bool):
+            errors.append(
+                f"{h.name}: install must be true or false (got {h.vars['install']!r})")
         if not h.root_disks.fs:
             errors.append(f"{h.name}: missing root_disks.fs")
         elif h.root_disks.fs not in ("zfs", "ext4", "xfs"):
             errors.append(f"{h.name}: unsupported root_disks.fs {h.root_disks.fs!r}")
+        raw_serials = (h.vars.get("root_disks") or {}).get("serials")
+        if raw_serials is not None and not _valid_serial_list(raw_serials):
+            errors.append(f"{h.name}: root_disks.serials must be a list of strings")
         if not h.root_disks.serials:
             errors.append(f"{h.name}: no root disk serials")
+        for s in h.root_disks.serials:
+            if len(s) < 4 or any(c in s for c in "*?[]"):
+                errors.append(f"{h.name}: invalid serial {s!r}")
         if h.cluster_role not in ("primary", "member"):
             errors.append(f"{h.name}: cluster_role must be primary or member")
     for label, values in (

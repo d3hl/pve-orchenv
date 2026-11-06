@@ -125,3 +125,39 @@ def test_cli_lint_fails_on_errors(tmp_path):
     bad.write_text(FIX.read_text().replace("primary", "member"))
     r = _cli("lint", str(bad))
     assert r.returncode == 1 and "exactly one primary" in r.stderr
+
+
+def _inv_with(tmp_path, old, new):
+    f = tmp_path / "h.yml"
+    f.write_text(FIX.read_text().replace(old, new, 1))
+    return load_inventory([f])
+
+
+@pytest.mark.parametrize("val", ['"false"', '"true"', '"yes"', "1", "null"])
+def test_install_string_false_is_not_true(tmp_path, val):
+    inv = _inv_with(tmp_path, "install: true", f"install: {val}")
+    assert inv.hosts["pve1"].install is False
+    assert any("pve1: install must be true or false" in e for e in lint(inv))
+
+
+def test_install_real_bool_true(tmp_path):
+    assert load_inventory([FIX]).hosts["pve1"].install is True
+
+
+def test_serials_string_rejected(tmp_path):
+    inv = _inv_with(tmp_path, '["SERIALA1", "SERIALA2"]', '"ABC"')
+    assert inv.hosts["pve1"].root_disks.serials == []
+    errs = lint(inv)
+    assert any("serials must be a list of strings" in e for e in errs)
+    assert any("no root disk serials" in e for e in errs)
+
+
+def test_short_serial_rejected(tmp_path):
+    inv = _inv_with(tmp_path, '["SERIALA1", "SERIALA2"]', '["SERIALA1", "AB"]')
+    assert any("invalid serial 'AB'" in e for e in lint(inv))
+
+
+@pytest.mark.parametrize("bad", ["ABC*", "AB?DEF", "AB[1]DEF"])
+def test_glob_in_serial_rejected(tmp_path, bad):
+    inv = _inv_with(tmp_path, '["SERIALA1", "SERIALA2"]', f'["SERIALA1", "{bad}"]')
+    assert any("invalid serial" in e for e in lint(inv))
