@@ -1,0 +1,99 @@
+---
+# Runs once per node in a serial: 1 play. Joins this node to a quorate member of cluster_name.
+- name: Read this node's cluster config
+  ansible.builtin.stat:
+    path: /etc/pve/corosync.conf
+  register: join_corosync
+
+- name: Join this node to the cluster
+  when: not join_corosync.stat.exists
+  block:
+    - name: Find a quorate member of the cluster
+      ansible.builtin.command: pvecm status
+      delegate_to: "{{ item }}"
+      register: join_probe
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      loop: "{{ groups['pve'] | difference([inventory_hostname]) }}"
+
+    - name: Choose the join target
+      ansible.builtin.set_fact:
+        join_target: >-
+          {{ (join_probe.results
+              | selectattr('rc', 'eq', 0)
+              | selectattr('stdout', 'search', '(?m)^Name:\s+' ~ cluster_name ~ '\s*$')
+              | selectattr('stdout', 'search', '(?m)^Quorate:\s+Yes')
+              | map(attribute='item') | list | first) | default('') }}
+
+    - name: A quorate member must exist
+      ansible.builtin.assert:
+        that: join_target != ''
+        fail_msg: No quorate member of cluster {{ cluster_name }} found to join; run the cluster create phase first
+        quiet: true
+
+    - name: List guests on this node (joining wipes the local /etc/pve)
+      ansible.builtin.shell: |
+        set -o pipefail
+        { qm list; pct list; } | grep -c -v -e '^ *VMID' || true
+      args:
+        executable: /bin/bash
+      register: join_guests
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse to join a node that has guests
+      ansible.builtin.assert:
+        that: join_guests.stdout | trim == '0'
+        fail_msg: >-
+          {{ inventory_hostname }} has VMs or containers. Joining replaces its local /etc/pve and would
+          lose them; move or back them up first. Nothing was changed.
+        quiet: true
+
+    - name: Generate this node's SSH key if missing
+      ansible.builtin.command: ssh-keygen -q -t ed25519 -N '' -f /root/.ssh/id_ed25519
+      args:
+        creates: /root/.ssh/id_ed25519
+
+    - name: Read this node's public key
+      ansible.builtin.slurp:
+        src: /root/.ssh/id_ed25519.pub
+      register: join_pubkey
+
+    - name: Authorize this node's key on the target member
+      ansible.builtin.lineinfile:
+        path: /root/.ssh/authorized_keys
+        line: "{{ join_pubkey.content | b64decode | trim }}"
+        create: true
+        mode: "0600"
+      delegate_to: "{{ join_target | default(inventory_hostname) }}"
+
+    - name: Scan the target's host key
+      ansible.builtin.command: "ssh-keyscan -t ed25519 {{ hostvars[join_target].mgmt_ip | split('/') | first }}"
+      register: join_hostkey
+      changed_when: false
+
+    - name: Pin the target's host key
+      ansible.builtin.known_hosts:
+        path: /root/.ssh/known_hosts
+        name: "{{ hostvars[join_target].mgmt_ip | split('/') | first }}"
+        key: "{{ join_hostkey.stdout_lines | reject('match', '^#') | first }}"
+
+    - name: Add the node to the cluster
+      ansible.builtin.command: >-
+        pvecm add {{ hostvars[join_target].mgmt_ip | split('/') | first }} --use_ssh
+        --link0 {{ mgmt_ip | split('/') | first }}
+        {{ ('--link1 ' ~ corosync_link1_ip) if corosync_link1_ip is defined else '' }}
+      changed_when: true
+
+    - name: Wait until the target member and this node both list this node and quorum holds
+      ansible.builtin.shell: pvecm status && pvecm nodes
+      delegate_to: "{{ item | default(inventory_hostname) }}"
+      register: join_settled
+      until: >-
+        join_settled.rc == 0 and join_settled.stdout is search('(?m)^Quorate:\s+Yes')
+        and join_settled.stdout is search('(?m)\s' ~ inventory_hostname ~ '(\s|$|\(local\))')
+      retries: 30
+      delay: 2
+      changed_when: false
+      loop: "{{ [join_target, inventory_hostname] }}"

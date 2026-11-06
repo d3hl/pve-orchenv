@@ -1,0 +1,73 @@
+---
+# Phase 1 (all nodes in parallel): detect existing cluster membership, refuse unsafe states, and
+# create the cluster on the primary when no node is in it yet. Joins are in join.yml (serial play).
+- name: Check for a corosync config
+  ansible.builtin.stat:
+    path: /etc/pve/corosync.conf
+  register: cluster_corosync_conf
+
+- name: Read the cluster status
+  ansible.builtin.command: pvecm status
+  register: cluster_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read the cluster name from the corosync config
+  ansible.builtin.slurp:
+    src: /etc/pve/corosync.conf
+  register: cluster_corosync_slurp
+  when: cluster_corosync_conf.stat.exists
+
+- name: Record this node's cluster membership
+  ansible.builtin.set_fact:
+    pve_cluster_name: >-
+      {{ ((cluster_corosync_slurp.content | b64decode | regex_search('(?m)^\s*cluster_name:\s*(\S+)', '\1') or ['']) | first)
+         if cluster_corosync_conf.stat.exists else '' }}
+    pve_cluster_quorate: "{{ cluster_status.rc == 0 and cluster_status.stdout is search('(?m)^Quorate:\\s+Yes') }}"
+
+- name: Refuse to continue when a node is in a foreign or non-quorate cluster
+  ansible.builtin.assert:
+    that: >-
+      groups['pve'] | map('extract', hostvars) | selectattr('pve_cluster_name', 'defined')
+      | selectattr('pve_cluster_name', 'ne', '')
+      | rejectattr('pve_cluster_name', 'eq', cluster_name) | list | length == 0
+      and
+      groups['pve'] | map('extract', hostvars) | selectattr('pve_cluster_name', 'defined')
+      | selectattr('pve_cluster_name', 'eq', cluster_name)
+      | rejectattr('pve_cluster_quorate') | list | length == 0
+    fail_msg: >-
+      Refusing to create or join a cluster: some node is already in a cluster with a different name
+      or without quorum ({{ groups['pve'] | map('extract', hostvars) | selectattr('pve_cluster_name', 'defined')
+      | selectattr('pve_cluster_name', 'ne', '') | map(attribute='inventory_hostname') | list }}).
+      Fix or remove that node by hand (this role never deletes cluster state), then re-run.
+    quiet: true
+  run_once: true
+
+- name: Pick the nodes that are quorate members of cluster_name
+  ansible.builtin.set_fact:
+    cluster_members: >-
+      {{ groups['pve'] | map('extract', hostvars) | selectattr('pve_cluster_name', 'defined')
+         | selectattr('pve_cluster_name', 'eq', cluster_name) | map(attribute='inventory_hostname') | list }}
+  run_once: true
+
+- name: Warn when the cluster has exactly two nodes
+  ansible.builtin.debug:
+    msg: A 2-node cluster loses quorum when either node is down; add a third node or a QDevice.
+  run_once: true
+  when: groups['pve'] | length == 2
+
+- name: Pick the node that creates the cluster
+  ansible.builtin.assert:
+    that: groups['pve'] | map('extract', hostvars) | selectattr('cluster_role', 'defined') | selectattr('cluster_role', 'eq', 'primary') | list | length == 1
+    fail_msg: Exactly one host in group pve must have cluster_role primary to create a new cluster
+    quiet: true
+  run_once: true
+  when: cluster_members | length == 0
+
+- name: Create the cluster on the primary
+  ansible.builtin.command: >-
+    pvecm create {{ cluster_name | quote }} --link0 {{ mgmt_ip | split('/') | first }}
+    {{ ('--link1 ' ~ corosync_link1_ip) if corosync_link1_ip is defined else '' }}
+  changed_when: true
+  when: cluster_members | length == 0 and cluster_role | default('member') == 'primary'

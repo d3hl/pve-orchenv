@@ -1,0 +1,20 @@
+---
+# Creates pools only when absent. There is no destroy/import/add/extend path: an existing pool
+# or VG (even one that does not match the request) is never touched.
+- name: Create missing ZFS pools
+  ansible.builtin.include_tasks: zfs.yml
+  loop: "{{ storage.zfs_pools | default([]) }}"
+  loop_control:
+    loop_var: storage_pool
+    label: "{{ storage_pool.name }}"
+
+- name: Create missing LVM-thin pools
+  ansible.builtin.include_tasks: thin.yml
+  loop: "{{ storage.thin_pools | default([]) }}"
+  loop_control:
+    loop_var: storage_pool
+    label: "{{ storage_pool.vg }}/{{ storage_pool.pool }}"
+
+- name: Register storages once per cluster
+  ansible.builtin.include_tasks: register.yml
+  when: pve_storages | length > 0

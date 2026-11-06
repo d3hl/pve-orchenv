@@ -1,0 +1,12 @@
+---
+# Per-host pools (disks by serial). Unset = this role creates nothing.
+# storage:
+#   zfs_pools:  [{name: tank, raid: single|mirror|raidz, serials: [..]}]
+#   thin_pools: [{vg: thinvg, pool: thin, serials: [..]}]
+storage: {}
+
+# Cluster-wide storage.cfg entries registered once. Unset = nothing registered.
+# - {id, type: zfspool|lvmthin|nfs|cifs, nodes: [..], content: [..],
+#    zfspool: pool | lvmthin: vg, thinpool | nfs: server, export | cifs: server, share}
+# cifs credentials: vault_smb_credentials[<id>] = {username, password}
+pve_storages: []

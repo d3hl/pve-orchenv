@@ -1,6 +1,5 @@
 ---
 # Plays run in order: base -> network -> cluster -> storage -> access.
-# cluster and storage are inserted between the two plays below by their own tasks.
 - name: Base configuration
   hosts: pve
   tags: [base]
@@ -12,6 +11,29 @@
   tags: [network]
   roles:
     - role: network
+
+- name: Cluster (create on the primary when no node is clustered yet)
+  hosts: pve
+  tags: [cluster]
+  roles:
+    - role: cluster
+
+# One node at a time: a join restarts corosync/pmxcfs on the joining node and changes quorum.
+- name: Cluster (join the remaining nodes)
+  hosts: pve
+  serial: 1
+  tags: [cluster]
+  tasks:
+    - name: Join the cluster
+      ansible.builtin.import_role:
+        name: cluster
+        tasks_from: join
+
+- name: Storage (pools per node, storage.cfg once)
+  hosts: pve
+  tags: [storage]
+  roles:
+    - role: storage
 
 # Users and tokens live in the shared /etc/pve/user.cfg, so they are created once, after the
 # cluster exists (before a join they would be lost). Still part of the base role.

@@ -1,0 +1,27 @@
+---
+# Input: storage_pool.serials. Output: storage_devices (one /dev/disk/by-id path per serial).
+# Several by-id aliases may point at one disk, so exactly one distinct non-partition device must match.
+- name: Find the by-id links for each serial
+  ansible.builtin.shell: |
+    for f in /dev/disk/by-id/*{{ item | quote }}*; do
+      case "$f" in *-part*) continue ;; esac
+      [ -e "$f" ] && echo "$(readlink -f -- "$f") $f"
+    done
+    true
+  register: storage_found
+  changed_when: false
+  check_mode: false
+  loop: "{{ storage_pool.serials }}"
+
+- name: Every serial matches exactly one disk
+  ansible.builtin.assert:
+    that: item.stdout_lines | map('split', ' ') | map('first') | unique | length == 1
+    fail_msg: "serial {{ item.item }} must match exactly one disk in /dev/disk/by-id (got: {{ item.stdout_lines }})"
+    quiet: true
+  loop: "{{ storage_found.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Collect the device paths
+  ansible.builtin.set_fact:
+    storage_devices: "{{ storage_found.results | map(attribute='stdout_lines') | map('first') | map('split', ' ') | map('last') | list }}"

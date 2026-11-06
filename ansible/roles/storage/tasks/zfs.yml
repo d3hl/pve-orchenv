@@ -1,0 +1,31 @@
+---
+- name: Validate the pool definition
+  ansible.builtin.assert:
+    that:
+      - storage_pool.raid in ['single', 'mirror', 'raidz']
+      - (storage_pool.raid == 'single' and storage_pool.serials | length == 1)
+        or (storage_pool.raid == 'mirror' and storage_pool.serials | length >= 2)
+        or (storage_pool.raid == 'raidz' and storage_pool.serials | length >= 3)
+    fail_msg: "pool {{ storage_pool.name }} - raid must be single (1 disk), mirror (2+) or raidz (3+)"
+    quiet: true
+
+- name: Check whether the pool exists
+  ansible.builtin.command: "zpool list -H -o name {{ storage_pool.name | quote }}"
+  register: storage_zpool
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Resolve the disks and create the pool when it is absent
+  when: storage_zpool.rc != 0
+  block:
+    - name: Resolve the disks
+      ansible.builtin.include_tasks: disks.yml
+
+    - name: Create the pool (never forced, zpool refuses disks in use)
+      ansible.builtin.command:
+        argv: >-
+          {{ ['zpool', 'create', '-o', 'ashift=12', storage_pool.name]
+             + ([] if storage_pool.raid == 'single' else [storage_pool.raid])
+             + storage_devices }}
+      changed_when: true

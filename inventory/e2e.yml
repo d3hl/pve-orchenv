@@ -7,11 +7,27 @@ all:
     gateway: 10.203.1.254
     dns: [10.203.1.107]
     cluster_name: e2e
+    # Registered once per cluster by the storage role. NFS/SMB entries only when a server is given.
+    pve_storages: >-
+      {{ [{'id': 'tank', 'type': 'zfspool', 'pool': 'tank', 'content': ['images', 'rootdir']},
+          {'id': 'thin', 'type': 'lvmthin', 'vg': 'thinvg', 'thinpool': 'thin', 'content': ['images', 'rootdir']}]
+         + ([{'id': 'e2e-nfs', 'type': 'nfs', 'server': lookup('env', 'E2E_NFS_SERVER'),
+              'export': lookup('env', 'E2E_NFS_EXPORT') | default('/export', true), 'content': ['iso', 'backup']}]
+            if lookup('env', 'E2E_NFS_SERVER') else [])
+         + ([{'id': 'e2e-smb', 'type': 'cifs', 'server': lookup('env', 'E2E_SMB_SERVER'),
+              'share': lookup('env', 'E2E_SMB_SHARE') | default('share', true), 'content': ['iso', 'backup']}]
+            if lookup('env', 'E2E_SMB_SERVER') else []) }}
   children:
     pve:
       vars:
         ansible_user: root
         # Relative to the repo root; ansible/ansible.cfg runs from there (see its comment).
+        # Pools are built from each node's own disks (serials set per host below).
+        storage:
+          zfs_pools:
+            - {name: tank, raid: single, serials: ["{{ e2e_data_serial }}"]}
+          thin_pools:
+            - {vg: thinvg, pool: thin, serials: ["{{ e2e_thin_serial }}"]}
         ansible_ssh_private_key_file: config/ssh/pve_ed25519
         # Throwaway VMs are reinstalled with new host keys on every run.
         ansible_ssh_common_args: >-

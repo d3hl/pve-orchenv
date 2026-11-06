@@ -1,0 +1,48 @@
+---
+# Assertions for the cluster role. Run: ansible-playbook -i inventory/e2e.yml ansible/tests/verify_cluster.yml
+- name: Verify cluster role
+  hosts: pve
+  gather_facts: false
+  tasks:
+    - name: Read the cluster status
+      ansible.builtin.command: pvecm status
+      register: cluster_status
+      changed_when: false
+
+    - name: Read the cluster nodes
+      ansible.builtin.command: pvecm nodes
+      register: cluster_nodes
+      changed_when: false
+
+    - name: The cluster is quorate, named cluster_name and has every inventory node
+      ansible.builtin.assert:
+        that:
+          - cluster_status.stdout is search('(?m)^Name:\s+' ~ cluster_name ~ '\s*$')
+          - cluster_status.stdout is search('(?m)^Quorate:\s+Yes\s*$')
+          - cluster_status.stdout is search('(?m)^Nodes:\s+' ~ (groups['pve'] | length) ~ '\s*$')
+        fail_msg: "{{ inventory_hostname }} is not in a quorate cluster {{ cluster_name }} of {{ groups['pve'] | length }} nodes"
+        quiet: true
+
+    - name: Every node lists every other node
+      ansible.builtin.assert:
+        that: cluster_nodes.stdout is search('(?m)\s' ~ item ~ '(\s|$|\(local\))')
+        fail_msg: "{{ item }} is missing from pvecm nodes on {{ inventory_hostname }}"
+        quiet: true
+      loop: "{{ groups['pve'] }}"
+
+    - name: List the API tokens of each user (Ruling C - tokens must survive clustering)
+      ansible.builtin.command: "pveum user token list {{ item.userid }} --output-format json"
+      register: token_list
+      changed_when: false
+      loop: "{{ pve_tokens }}"
+      loop_control:
+        label: "{{ item.userid }}!{{ item.tokenid }}"
+
+    - name: Every configured token is visible on this node
+      ansible.builtin.assert:
+        that: item.item.tokenid in (item.stdout | from_json | map(attribute='tokenid') | list)
+        fail_msg: "token {{ item.item.userid }}!{{ item.item.tokenid }} is not visible on {{ inventory_hostname }}"
+        quiet: true
+      loop: "{{ token_list.results }}"
+      loop_control:
+        label: "{{ item.item.userid }}!{{ item.item.tokenid }}"

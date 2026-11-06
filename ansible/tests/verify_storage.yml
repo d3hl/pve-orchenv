@@ -1,0 +1,42 @@
+---
+# Assertions for the storage role. Run: ansible-playbook -i inventory/e2e.yml ansible/tests/verify_storage.yml
+- name: Verify storage role
+  hosts: pve
+  gather_facts: false
+  tasks:
+    - name: Read the ZFS pool tank
+      ansible.builtin.command: zpool list -H -o name tank
+      register: zpool_tank
+      changed_when: false
+
+    - name: Read the thin pool LV
+      ansible.builtin.command: lvs --noheadings -o lv_name thinvg/thin
+      register: lv_thin
+      changed_when: false
+
+    - name: Read the storage status
+      ansible.builtin.command: pvesm status
+      register: pvesm_status
+      changed_when: false
+
+    - name: Pools exist and both storages are active
+      ansible.builtin.assert:
+        that:
+          - zpool_tank.stdout | trim == 'tank'
+          - lv_thin.stdout | trim == 'thin'
+          - pvesm_status.stdout is search('(?m)^tank\s+zfspool\s+active')
+          - pvesm_status.stdout is search('(?m)^thin\s+lvmthin\s+active')
+        fail_msg: "tank/thin missing or inactive on {{ inventory_hostname }}"
+        quiet: true
+
+    - name: List datasets of tank
+      ansible.builtin.command: zfs list -H -o name -r tank
+      register: tank_datasets
+      changed_when: false
+
+    - name: The marker dataset tank/keepme survived (pre-created on e2e-pve1 only)
+      ansible.builtin.assert:
+        that: "'tank/keepme' in tank_datasets.stdout_lines"
+        fail_msg: tank/keepme is gone, the role touched an existing pool
+        quiet: true
+      when: inventory_hostname == 'e2e-pve1'

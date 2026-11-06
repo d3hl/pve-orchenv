@@ -1,0 +1,49 @@
+---
+# Once per cluster. Adds missing storage IDs; for existing ones only nodes/content are updated.
+- name: Register cluster storages
+  run_once: true
+  block:
+    - name: Read the current storage config
+      ansible.builtin.command: pvesh get /storage --output-format json
+      register: storage_current
+      changed_when: false
+      check_mode: false
+
+    - name: Add missing storages
+      ansible.builtin.command:
+        argv: >-
+          {{ ['pvesm', 'add', item.type, item.id]
+             + (['--pool', item.pool] if item.type == 'zfspool' else [])
+             + (['--vgname', item.vg, '--thinpool', item.thinpool] if item.type == 'lvmthin' else [])
+             + (['--server', item.server, '--export', item.export] if item.type == 'nfs' else [])
+             + (['--server', item.server, '--share', item.share,
+                 '--username', vault_smb_credentials[item.id].username,
+                 '--password', vault_smb_credentials[item.id].password] if item.type == 'cifs' else [])
+             + (['--content', item.content | join(',')] if item.content is defined else [])
+             + (['--nodes', item.nodes | join(',')] if item.nodes is defined else []) }}
+      changed_when: true
+      no_log: "{{ item.type == 'cifs' }}"
+      when: item.id not in (storage_current.stdout | from_json | map(attribute='storage') | list)
+      loop: "{{ pve_storages }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Update nodes and content of existing storages
+      ansible.builtin.command:
+        argv: >-
+          {{ ['pvesm', 'set', item.id]
+             + (['--content', item.content | join(',')] if item.content is defined else [])
+             + (['--nodes', item.nodes | join(',')] if item.nodes is defined else []) }}
+      changed_when: true
+      when:
+        - item.id in (storage_current.stdout | from_json | map(attribute='storage') | list)
+        - >-
+          (item.content is defined and
+           (storage_current.stdout | from_json | selectattr('storage', 'eq', item.id) | first).content | default('') | split(',') | sort
+           != item.content | sort)
+          or (item.nodes is defined and
+              (storage_current.stdout | from_json | selectattr('storage', 'eq', item.id) | first).nodes | default('') | split(',') | sort
+              != item.nodes | sort)
+      loop: "{{ pve_storages }}"
+      loop_control:
+        label: "{{ item.id }}"
