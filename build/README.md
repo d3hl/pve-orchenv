@@ -7,6 +7,8 @@
 - `PVE_ISO_PATH=<path>` overrides the ISO location (still checksum-verified).
 - Requires podman. All tooling (proxmox-auto-install-assistant, xorriso, iPXE toolchain) runs in `build/Containerfile`.
 - Nested e2e VMs boot `ipxe.iso` (EFI) because of the OVMF/virtio PXE quirk on the test host; real hardware uses TFTP `ipxe.efi`/`undionly.kpxe`.
+- Only the base image (by digest) and `proxmox-auto-install-assistant` (`PVE_AIA_VERSION`) are pinned; other Debian packages come from the rolling trixie archive.
+- `dist/<site>` is a symlink to `dist/.<site>-<UTC timestamp>/`, swapped atomically; the previous build is kept for rollback. A running boot server bind-mounts what the symlink pointed to at container start, so restart the stack after a rebuild.
 - iPXE has `dhcp` + `chain http://$BOOTSERVER_HOST:$BOOTSERVER_HTTP_PORT/boot.ipxe` embedded, so no DHCP user-class rules are needed on the router.
 
 ## Router setup

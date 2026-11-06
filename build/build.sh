@@ -81,7 +81,7 @@ if ! echo "${PVE_ISO_SHA256}  ${ISO}" | sha256sum -c - >&2; then
   exit 1
 fi
 
-podman build -q -t "$IMAGE" -f build/Containerfile build >/dev/null
+podman build -q -t "$IMAGE" --build-arg "PVE_AIA_VERSION=$PVE_AIA_VERSION" -f build/Containerfile build >/dev/null
 
 WORK="$(mktemp -d "$ROOT/cache/work.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -90,11 +90,19 @@ REL="cache/$(basename "$WORK")"
 case "$ISO" in /*) ISO_IN="$ISO" ;; *) ISO_IN="/work/$ISO" ;; esac
 podman run --rm -v "$ROOT:/work:Z" "$IMAGE" /work/build/build.sh --inner "$SITE" "$REL" "$ISO_IN"
 
-# dist/<site>/ is only touched after everything succeeded; swap via rename.
+# dist/<site> is a symlink to dist/.<site>-<UTC ts>/. Everything above can fail without touching it;
+# the final step is a single rename(2) of a new symlink over the old one.
 mkdir -p "$ROOT/dist"
-DEST="$ROOT/dist/$SITE"
-rm -rf "$DEST.old"
-[[ -e "$DEST" ]] && mv "$DEST" "$DEST.old"
-mv "$WORK/out" "$DEST"
-rm -rf "$DEST.old"
-echo "build: dist/$SITE/ ready"
+cd "$ROOT/dist"
+VER=".$SITE-$(date -u +%Y%m%dT%H%M%SZ)"
+mv "$WORK/out" "$VER"
+if [[ -e "$SITE" && ! -L "$SITE" ]]; then
+  # One-time migration of a real directory from earlier builds.
+  mv "$SITE" ".$SITE-$(date -u -r "$SITE" +%Y%m%dT%H%M%SZ)-legacy"
+fi
+ln -sfn "$VER" ".$SITE.tmp"
+mv -T ".$SITE.tmp" "$SITE"
+# Keep the new build and the one before it for rollback.
+mapfile -t OLD < <(printf '%s\n' ".$SITE-"????????T??????Z* | sort -r | tail -n +3)
+for d in "${OLD[@]}"; do [[ -d "$d" ]] && rm -rf -- "$d"; done
+echo "build: dist/$SITE -> $VER"

@@ -1,4 +1,6 @@
-FROM debian:trixie
+# Base pinned by digest (debian:trixie index digest).
+FROM docker.io/library/debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
+ARG PVE_AIA_VERSION
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
  && curl -fsSL https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg \
@@ -6,5 +8,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && echo "deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve trixie pve-no-subscription" \
       > /etc/apt/sources.list.d/pve-no-subscription.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends proxmox-auto-install-assistant xorriso cpio zstd gzip git make gcc libc6-dev binutils liblzma-dev perl gettext-base mtools dosfstools \
+ && apt-get install -y --no-install-recommends "proxmox-auto-install-assistant=${PVE_AIA_VERSION:?}" xorriso cpio zstd gzip git make gcc libc6-dev binutils liblzma-dev perl gettext-base mtools dosfstools \
  && rm -rf /var/lib/apt/lists/*
