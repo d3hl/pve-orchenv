@@ -1,0 +1,46 @@
+---
+# Proves the token write-safety rescue: with an unwritable secret file, the throwaway token is
+# created, the write fails, the token is removed again and the role fails.
+# Run: ansible-playbook -i inventory/e2e.yml ansible/tests/test_token_rescue.yml --limit e2e-pve1
+- name: Token rescue path
+  hosts: pve
+  gather_facts: false
+  run_once: true
+  vars:
+    rescue_dir: "{{ playbook_dir }}/../artifacts/rescue-test"
+    pve_tokens:
+      - {userid: "root@pam", tokenid: "rescuetest", privsep: true}
+    pve_artifacts_dir: "{{ rescue_dir }}"
+  tasks:
+    - name: Make the secret destination an unwritable path (a directory)
+      ansible.builtin.file:
+        path: "{{ rescue_dir }}/{{ inventory_hostname }}-rescuetest.txt"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+
+    - name: Run the token tasks, which must fail
+      block:
+        - name: Create tokens
+          ansible.builtin.include_role:
+            name: "{{ playbook_dir }}/../roles/base"  # noqa: role-name[path]
+            tasks_from: access
+        - name: Unreachable, the role should have failed
+          ansible.builtin.fail:
+            msg: the token tasks did not fail
+      rescue:
+        - name: The role failed because the secret could not be saved
+          ansible.builtin.assert:
+            that: "'could not save' in (ansible_failed_result.msg | lower)"
+        - name: List tokens of root@pam
+          ansible.builtin.command: pveum user token list root@pam --output-format json
+          register: left
+          changed_when: false
+        - name: The throwaway token was removed
+          ansible.builtin.assert:
+            that: "'rescuetest' not in (left.stdout | from_json | map(attribute='tokenid') | list)"
+        - name: Clean up
+          ansible.builtin.file:
+            path: "{{ rescue_dir }}"
+            state: absent
+          delegate_to: localhost

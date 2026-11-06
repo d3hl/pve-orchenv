@@ -29,11 +29,18 @@
         that: enterprise_enabled.stdout | trim == ''
         fail_msg: "Enabled enterprise repos: {{ enterprise_enabled.stdout }}"
 
-    - name: The pve-no-subscription repository is present
-      ansible.builtin.command: grep -rl pve-no-subscription /etc/apt/sources.list.d/
+    - name: Read the pve-no-subscription repository
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/pve-no-subscription.sources
       register: nosub
-      changed_when: false
 
+    - name: The pve-no-subscription repository is present and enabled
+      ansible.builtin.assert:
+        that:
+          - nosub.content | b64decode is search('(?m)^Components:\s+pve-no-subscription$')
+          - nosub.content | b64decode is not search('(?mi)^Enabled:\s+(no|false)')
+
+    # Time-sensitive: new upstream updates make this fail until the next base run.
     - name: Nothing left to upgrade
       ansible.builtin.command: apt-get -s dist-upgrade  # noqa: command-instead-of-module
       register: sim
@@ -72,7 +79,7 @@
         that: >-
           etc_hosts.content | b64decode is search(
           '(?m)^' ~ (hostvars[item].mgmt_ip | split('/') | first | regex_escape)
-          ~ '\s+' ~ item ~ '\.' ~ domain ~ '\s+' ~ item ~ '(\s|$)')
+          ~ '\s+' ~ item ~ '\.' ~ (domain | regex_escape) ~ '\s+' ~ item ~ '(\s|$)')
         fail_msg: "{{ item }} missing from /etc/hosts"
       loop: "{{ groups['pve'] }}"
 
@@ -84,7 +91,7 @@
     - name: Resolv.conf has the search domain and every resolver
       ansible.builtin.assert:
         that:
-          - resolv.content | b64decode is search('(?m)^search ' ~ domain | regex_escape ~ '$')
+          - resolv.content | b64decode is search('(?m)^search ' ~ (domain | regex_escape) ~ '$')
           - resolv.content | b64decode is search('(?m)^nameserver ' ~ item | regex_escape ~ '$')
       loop: "{{ dns }}"
 
@@ -122,6 +129,23 @@
           register: nag_left
           changed_when: false
           loop: "{{ nag_js_files }}"
+
+        - name: Count patched subscription dialogs
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: |
+              perl -0777 -ne '$n++ while /void\(\{\s*title:\s*gettext\((["\x27])No valid subscription\1/g; END { print $n+0 }' {{ item }}
+          register: nag_patched
+          changed_when: false
+          loop: "{{ nag_js_files }}"
+
+        - name: The patched form is present (guards against an upstream string change)
+          ansible.builtin.assert:
+            that: item.stdout | int > 0
+            fail_msg: "{{ item.item }} has no patched dialog; the patch marker may have changed upstream"
+          loop: "{{ nag_patched.results }}"
+          loop_control:
+            label: "{{ item.item }}"
 
         - name: The widget toolkit JS has no subscription dialog
           ansible.builtin.assert:

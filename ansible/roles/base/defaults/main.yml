@@ -4,7 +4,7 @@
 pve_remove_nag: true
 pve_users: []
 pve_tokens: []
-ntp_servers: [0.debian.pool.ntp.org]
+ntp_servers: [0.debian.pool.ntp.org, 1.debian.pool.ntp.org, 2.debian.pool.ntp.org]  # same list as group_vars/all
 
 # Repositories to switch off. Each is rewritten with Enabled: no.
 pve_disabled_repos:

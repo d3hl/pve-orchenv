@@ -25,6 +25,7 @@
     signed_by: "{{ pve_keyring }}"
     enabled: false
   loop: "{{ pve_disabled_repos }}"
+  register: base_repos_off
 
 - name: Enable the pve-no-subscription repository
   ansible.builtin.deb822_repository:
@@ -35,6 +36,12 @@
     components: pve-no-subscription
     signed_by: "{{ pve_keyring }}"
     enabled: true
+  register: base_repo_on
+
+- name: Refresh the apt index after a repository change
+  ansible.builtin.apt:
+    update_cache: true
+  when: base_repos_off is changed or base_repo_on is changed
 
 - name: Full upgrade
   ansible.builtin.apt:
@@ -79,7 +86,6 @@
         mode: "0644"
         owner: root
         group: root
-      register: sshd_dropin
       notify: Reload sshd
 
     - name: Validate the sshd configuration
@@ -115,8 +121,8 @@
 
     - name: Apply the patch
       ansible.builtin.command: /usr/local/sbin/pve-no-nag
-      register: nag_patch
-      changed_when: "'patched' in nag_patch.stdout"
+      register: base_nag_patch
+      changed_when: "'patched' in base_nag_patch.stdout"
 
 - name: Remove the subscription notice hook
   when: not pve_remove_nag

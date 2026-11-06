@@ -1,0 +1,47 @@
+---
+# One token (pve_token). The secret is written right after creation; if that fails the token
+# is removed again (a token whose secret is lost is useless) and the run fails.
+- name: List tokens of the user
+  ansible.builtin.command: "pveum user token list {{ pve_token.userid }} --output-format json"
+  register: base_token_list
+  changed_when: false
+  check_mode: false
+
+- name: Create the token and save the secret
+  when: pve_token.tokenid not in (base_token_list.stdout | from_json | map(attribute='tokenid') | list)
+  block:
+    - name: Create the token
+      ansible.builtin.command: >-
+        pveum user token add {{ pve_token.userid }} {{ pve_token.tokenid }}
+        --privsep {{ 1 if pve_token.privsep | default(false) else 0 }} --output-format json
+      register: base_token_add
+      changed_when: true
+      no_log: true
+
+    - name: Write the secret to ansible/artifacts (mode 0600)
+      ansible.builtin.copy:
+        dest: "{{ pve_artifacts_dir }}/{{ inventory_hostname }}-{{ pve_token.tokenid }}.txt"
+        content: |
+          {{ (base_token_add.stdout | from_json)['full-tokenid'] }}
+          {{ (base_token_add.stdout | from_json)['value'] }}
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Remind to store the new token secret in the vault
+      ansible.builtin.debug:
+        msg: >-
+          New API token {{ pve_token.userid }}!{{ pve_token.tokenid }} created; its secret is in
+          ansible/artifacts/{{ inventory_hostname }}-{{ pve_token.tokenid }}.txt (gitignored).
+          Move it into the vault, then delete the file.
+  rescue:
+    - name: Remove the token whose secret could not be saved
+      ansible.builtin.command: "pveum user token remove {{ pve_token.userid }} {{ pve_token.tokenid }}"
+      changed_when: true
+    - name: Stop, the token secret could not be saved
+      ansible.builtin.fail:
+        msg: >-
+          Could not save the secret for {{ pve_token.userid }}!{{ pve_token.tokenid }};
+          the token was removed again. Fix the artifacts directory and re-run.
