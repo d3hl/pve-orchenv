@@ -1,0 +1,18 @@
+---
+# Wait for the Proxmox task whose UPID is in pve_upid; fail unless it finished OK.
+# pve_upid is usually a template over pve_result, which the polling below overwrites, so freeze it first.
+- name: Freeze UPID
+  ansible.builtin.set_fact:
+    frozen_upid: "{{ pve_upid }}"
+- name: Wait for PVE task
+  ansible.builtin.include_tasks: pve_api.yml
+  vars:
+    pve_method: GET
+    pve_path: "/nodes/{{ e2e_node }}/tasks/{{ frozen_upid | urlencode }}/status"
+    pve_wait_stopped: true
+    pve_retries: "{{ pve_task_retries | default(60) }}"
+- name: Check PVE task exit status
+  ansible.builtin.assert:
+    that: pve_result.json.data.exitstatus == 'OK'
+    fail_msg: "PVE task {{ frozen_upid }} failed: {{ pve_result.json.data.exitstatus }}"
+    quiet: true

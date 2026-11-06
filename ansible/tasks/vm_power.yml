@@ -1,0 +1,18 @@
+---
+# Inputs: vmid, power_action (start|shutdown). Waits for the task to finish.
+- name: Guard VMID
+  ansible.builtin.assert:
+    that: vmid | int in e2e_allowed_vmids
+    fail_msg: "refusing to touch VMID {{ vmid }}"
+    quiet: true
+- name: "Power action on VM {{ vmid }}"
+  ansible.builtin.include_tasks: pve_api.yml
+  vars:
+    pve_method: POST
+    pve_path: "/nodes/{{ e2e_node }}/qemu/{{ vmid }}/status/{{ power_action }}"
+    pve_body: "{{ {'timeout': 180, 'forceStop': 1} if power_action == 'shutdown' else {'timeout': 60} }}"
+- name: Wait for power action on VM {{ vmid }}
+  ansible.builtin.include_tasks: pve_wait_task.yml
+  vars:
+    pve_upid: "{{ pve_result.json.data }}"
+    pve_task_retries: 60

@@ -1,0 +1,102 @@
+---
+# Bring up the three nested PVE nodes and leave them installed and SSH-reachable as root.
+# Usage (from the repo root): make e2e-up
+#   ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/e2e_up.yml -i inventory/e2e.yml
+# Requires the e2e boot server (bootserver/bootserver.sh up e2e) and the API token secret in the vault.
+# Memory: the hypervisor has 15.6 GB, so nodes install one at a time at 6144 MB, then run at 3072 MB.
+- name: Create, install and start the e2e VMs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [e2e_vars.yml]
+  vars:
+    e2e_install_memory: 6144
+    e2e_steady_memory: 3072
+    e2e_install_retries: 90   # x 20 s = 30 min per node
+  tasks:
+    - name: Preflight
+      ansible.builtin.include_tasks: tasks/preflight.yml
+
+    - name: Boot server reachable and knows all nodes
+      ansible.builtin.uri:
+        url: "{{ e2e_boot_url }}/status"
+        return_content: true
+      register: boot_status
+      changed_when: false
+      failed_when: boot_status.status != 200 or (groups['pve'] | difference(boot_status.json.keys() | list) | length > 0)
+
+    - name: Bring up
+      block:
+        - name: List VMs on the node
+          ansible.builtin.include_tasks: tasks/pve_api.yml
+          vars:
+            pve_method: GET
+            pve_path: "/nodes/{{ e2e_node }}/qemu"
+        - name: VMIDs must be free (run e2e-down first)
+          ansible.builtin.assert:
+            that: hostvars[item].vmid | int not in (pve_result.json.data | map(attribute='vmid') | map('int') | list)
+            fail_msg: "VMID {{ hostvars[item].vmid }} already exists: run make e2e-down first"
+            quiet: true
+          loop: "{{ groups['pve'] }}"
+
+        - name: List ISOs
+          ansible.builtin.include_tasks: tasks/pve_api.yml
+          vars:
+            pve_method: GET
+            pve_path: "/nodes/{{ e2e_node }}/storage/{{ e2e_iso_storage }}/content?content=iso"
+        - name: Remove stale iPXE ISO
+          ansible.builtin.include_tasks: tasks/pve_api.yml
+          vars:
+            pve_method: DELETE
+            pve_path: "/nodes/{{ e2e_node }}/storage/{{ e2e_iso_storage }}/content/{{ e2e_iso_volid | urlencode }}"
+          when: e2e_iso_volid in (pve_result.json.data | map(attribute='volid') | list)
+        - name: Wait for ISO removal
+          ansible.builtin.include_tasks: tasks/pve_wait_task.yml
+          vars:
+            pve_upid: "{{ pve_result.json.data }}"
+          when: pve_result.json.data is string
+        - name: Download the iPXE ISO from the boot server
+          ansible.builtin.include_tasks: tasks/pve_api.yml
+          vars:
+            pve_method: POST
+            pve_path: "/nodes/{{ e2e_node }}/storage/{{ e2e_iso_storage }}/download-url"
+            pve_body:
+              url: "{{ e2e_boot_url }}/ipxe.iso"
+              filename: "{{ e2e_iso_name }}"
+              content: iso
+        - name: Wait for ISO download
+          ansible.builtin.include_tasks: tasks/pve_wait_task.yml
+          vars:
+            pve_upid: "{{ pve_result.json.data }}"
+
+        - name: Create the VMs
+          ansible.builtin.include_tasks: tasks/vm_create.yml
+          loop: "{{ groups['pve'] }}"
+          loop_control: {loop_var: vm_name}
+        - name: Install the VMs one at a time
+          ansible.builtin.include_tasks: tasks/vm_install.yml
+          loop: "{{ groups['pve'] }}"
+          loop_control: {loop_var: vm_name}
+        - name: Wait for SSH on each node
+          ansible.builtin.wait_for:
+            host: "{{ hostvars[item].ansible_host }}"
+            port: 22
+            search_regex: OpenSSH
+            timeout: 300
+          loop: "{{ groups['pve'] }}"
+      rescue:
+        - name: Save diagnostics to cache/e2e/
+          ansible.builtin.include_tasks: tasks/diagnostics.yml
+        - name: Fail
+          ansible.builtin.fail:
+            msg: >-
+              e2e bring-up failed (status, boot-server state and answer log saved in {{ e2e_cache }}).
+              Last error: {{ ansible_failed_result.msg | default('see above') }}
+
+- name: Prove root SSH works on every node
+  hosts: pve
+  gather_facts: false
+  tasks:
+    - name: Wait for an Ansible connection as root
+      ansible.builtin.wait_for_connection:
+        timeout: 300

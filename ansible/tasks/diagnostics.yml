@@ -1,0 +1,17 @@
+---
+# No console access with this token, so on failure save what we can see to cache/e2e/.
+- name: Save VM status
+  ansible.builtin.include_tasks: diag_vm.yml
+  loop: "{{ groups['pve'] }}"
+  loop_control: {loop_var: vm_name}
+- name: Fetch boot server /status
+  ansible.builtin.uri:
+    url: "{{ e2e_boot_url }}/status"
+    return_content: true
+    dest: "{{ e2e_cache }}/bootserver-status.json"
+    mode: "0600"
+  failed_when: false
+- name: Save answer container logs
+  ansible.builtin.shell: podman logs pve-orchenv-bootserver-answer > "{{ e2e_cache }}/answer.log" 2>&1
+  changed_when: false
+  failed_when: false

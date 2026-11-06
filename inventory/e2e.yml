@@ -1,0 +1,67 @@
+---
+# Nested e2e site: three PVE VMs (VMIDs 9901-9903) on the test hypervisor `pve`.
+# Site-specific vars are here, not in group_vars/all/main.yml (which outranks them).
+all:
+  vars:
+    domain: e2e.internal
+    gateway: 10.203.1.254
+    dns: [10.203.1.254]
+    cluster_name: e2e
+  children:
+    pve:
+      vars:
+        ansible_user: root
+        # Relative to the repo root; ansible/ansible.cfg runs from there (see its comment).
+        ansible_ssh_private_key_file: config/ssh/pve_ed25519
+        # Throwaway VMs are reinstalled with new host keys on every run.
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=accept-new
+          -o UserKnownHostsFile=cache/e2e/known_hosts
+      hosts:
+        e2e-pve1:
+          install: true
+          vmid: 9901
+          mac: "BC:24:11:E2:00:01"
+          mgmt_ip: 10.203.1.241/24
+          ansible_host: 10.203.1.241
+          root_disks:
+            fs: zfs
+            raid: raid1
+            serials: ["E2E1ROOTA", "E2E1ROOTB"]
+          # Used by the storage role tests (Task 9).
+          e2e_data_serial: E2E1DATA
+          e2e_thin_serial: E2E1THIN
+          cluster_role: primary
+        e2e-pve2:
+          install: true
+          vmid: 9902
+          mac: "BC:24:11:E2:00:02"
+          mgmt_ip: 10.203.1.242/24
+          ansible_host: 10.203.1.242
+          root_disks:
+            fs: zfs
+            raid: raid1
+            serials: ["E2E2ROOTA", "E2E2ROOTB"]
+          # Used by the storage role tests (Task 9).
+          e2e_data_serial: E2E2DATA
+          e2e_thin_serial: E2E2THIN
+          cluster_role: member
+        e2e-pve3:
+          install: true
+          vmid: 9903
+          mac: "BC:24:11:E2:00:03"
+          mgmt_ip: 10.203.1.243/24
+          ansible_host: 10.203.1.243
+          root_disks:
+            fs: zfs
+            raid: raid1
+            serials: ["E2E3ROOTA", "E2E3ROOTB"]
+          # Used by the storage role tests (Task 9).
+          e2e_data_serial: E2E3DATA
+          e2e_thin_serial: E2E3THIN
+          cluster_role: member
+    e2e_hypervisor:
+      hosts:
+        pve-hypervisor:
+          # Documentation (named to not clash with the pve group) only: SSH is not available; the harness uses the API.
+          ansible_host: 10.203.1.113

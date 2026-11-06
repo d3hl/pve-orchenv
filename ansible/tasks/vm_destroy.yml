@@ -1,0 +1,32 @@
+---
+# Inputs: vmid. Hard guard: only the e2e VMIDs may be stopped or destroyed.
+- name: Guard VMID
+  ansible.builtin.assert:
+    that: vmid | int in e2e_allowed_vmids
+    fail_msg: "refusing to touch VMID {{ vmid }}"
+    quiet: true
+- name: Current status of VM {{ vmid }}
+  ansible.builtin.include_tasks: pve_api.yml
+  vars:
+    pve_method: GET
+    pve_path: "/nodes/{{ e2e_node }}/qemu/{{ vmid }}/status/current"
+- name: Stop VM {{ vmid }}
+  ansible.builtin.include_tasks: pve_api.yml
+  vars:
+    pve_method: POST
+    pve_path: "/nodes/{{ e2e_node }}/qemu/{{ vmid }}/status/stop"
+  when: pve_result.json.data.status != 'stopped'
+- name: Wait for stop of VM {{ vmid }}
+  ansible.builtin.include_tasks: pve_wait_task.yml
+  vars:
+    pve_upid: "{{ pve_result.json.data }}"
+  when: pve_result.json.data is string
+- name: Destroy and purge disks of VM {{ vmid }}
+  ansible.builtin.include_tasks: pve_api.yml
+  vars:
+    pve_method: DELETE
+    pve_path: "/nodes/{{ e2e_node }}/qemu/{{ vmid }}?purge=1&destroy-unreferenced-disks=1&skiplock=1"
+- name: Wait for destroy of VM {{ vmid }}
+  ansible.builtin.include_tasks: pve_wait_task.yml
+  vars:
+    pve_upid: "{{ pve_result.json.data }}"

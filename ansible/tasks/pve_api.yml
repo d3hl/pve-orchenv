@@ -1,0 +1,33 @@
+---
+# One Proxmox API call. Inputs: pve_path (under /api2/json), pve_method, pve_body (dict, optional),
+# pve_ok (accepted status codes, default [200]), pve_wait_stopped (poll a task status until stopped).
+# Output: pve_result.
+# TLS: the test hypervisor uses a self-signed certificate, so validate_certs is false here and
+# ONLY here (every PVE call goes through this file; boot-server calls do not).
+# The uri task is no_log (its invocation record would contain the token header); the assert
+# below reports the HTTP status and PVE's error text without echoing any request data.
+- name: "PVE API call {{ pve_method ~ ' ' ~ pve_path }}"
+  ansible.builtin.uri:
+    url: "{{ e2e_api_url }}/api2/json{{ pve_path }}"
+    method: "{{ pve_method }}"
+    headers:
+      Authorization: "PVEAPIToken={{ e2e_token_id }}={{ vault_e2e_pve_token_secret }}"
+    body_format: "{{ 'form-urlencoded' if pve_body is defined else omit }}"
+    body: "{{ pve_body | default(omit) }}"
+    status_code: [100, 200, 201, 204, 400, 401, 403, 404, 500, 501, 595]
+    validate_certs: false
+    return_content: true
+    timeout: 60
+  register: pve_result
+  changed_when: pve_method != 'GET'
+  until: not (pve_wait_stopped | default(false)) or (pve_result.status == 200 and pve_result.json.data.status == 'stopped')
+  retries: "{{ pve_retries | default(1) }}"
+  delay: 5
+  no_log: true
+- name: "Check PVE API call {{ pve_method ~ ' ' ~ pve_path }}"
+  ansible.builtin.assert:
+    that: pve_result.status in (pve_ok | default([200]))
+    fail_msg: >-
+      PVE API {{ pve_method }} {{ pve_path }} returned HTTP {{ pve_result.status }}:
+      {{ (pve_result.content | default('', true) or pve_result.msg | default('')) | truncate(300) }}
+    quiet: true

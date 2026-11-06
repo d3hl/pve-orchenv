@@ -1,0 +1,19 @@
+---
+- name: Check API settings and VMIDs
+  ansible.builtin.assert:
+    that:
+      - e2e_token_id | length > 0
+      - vault_e2e_pve_token_secret is defined
+      - vault_e2e_pve_token_secret | length > 0
+      - groups['pve'] | length == 3
+      - hostvars[item].vmid in e2e_allowed_vmids
+    fail_msg: >-
+      Need E2E_PVE_TOKEN_ID in config/e2e.env, vault_e2e_pve_token_secret in the vault, and
+      exactly three pve hosts with vmid in {{ e2e_allowed_vmids }} (run with -i inventory/e2e.yml)
+    quiet: true
+  loop: "{{ groups['pve'] }}"
+- name: Create cache dir
+  ansible.builtin.file:
+    path: "{{ e2e_cache }}"
+    state: directory
+    mode: "0700"

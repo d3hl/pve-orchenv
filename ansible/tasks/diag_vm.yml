@@ -1,0 +1,12 @@
+---
+- name: Fetch status of {{ vm_name }}
+  ansible.builtin.include_tasks: pve_api.yml
+  vars:
+    pve_method: GET
+    pve_path: "/nodes/{{ e2e_node }}/qemu/{{ hostvars[vm_name].vmid | int }}/status/current"
+    pve_ok: [200, 500]
+- name: Write status of {{ vm_name }}
+  ansible.builtin.copy:
+    content: "{{ pve_result.content }}\n"
+    dest: "{{ e2e_cache }}/{{ vm_name }}-vm-status.json"
+    mode: "0600"

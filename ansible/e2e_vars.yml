@@ -1,0 +1,19 @@
+---
+# Shared by e2e_up.yml and e2e_down.yml. Connection settings come from config/e2e.env;
+# the API token secret is vault_e2e_pve_token_secret (inventory/group_vars/all/vault.yml).
+e2e_env_file: "{{ playbook_dir }}/../config/e2e.env"
+e2e_api_url: "{{ lookup('ansible.builtin.ini', 'E2E_PVE_API_URL type=properties file=' ~ e2e_env_file) }}"
+e2e_token_id: "{{ lookup('ansible.builtin.ini', 'E2E_PVE_TOKEN_ID type=properties file=' ~ e2e_env_file) }}"
+e2e_node: "{{ lookup('ansible.builtin.ini', 'E2E_NODE type=properties file=' ~ e2e_env_file) }}"
+e2e_storage: "{{ lookup('ansible.builtin.ini', 'E2E_STORAGE type=properties file=' ~ e2e_env_file) }}"
+e2e_bridge: "{{ lookup('ansible.builtin.ini', 'E2E_BRIDGE type=properties file=' ~ e2e_env_file) }}"
+e2e_boot_host: "{{ lookup('ansible.builtin.ini', 'BOOTSERVER_HOST type=properties file=' ~ e2e_env_file) }}"
+e2e_boot_port: "{{ lookup('ansible.builtin.ini', 'BOOTSERVER_HTTP_PORT type=properties file=' ~ e2e_env_file) }}"
+e2e_boot_url: "http://{{ e2e_boot_host }}:{{ e2e_boot_port }}"
+
+# The only VMIDs this harness may ever touch.
+e2e_allowed_vmids: [9901, 9902, 9903]
+e2e_iso_storage: local
+e2e_iso_name: pve-orchenv-ipxe.iso
+e2e_iso_volid: "{{ e2e_iso_storage }}:iso/{{ e2e_iso_name }}"
+e2e_cache: "{{ playbook_dir }}/../cache/e2e"

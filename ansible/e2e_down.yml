@@ -1,0 +1,33 @@
+---
+# Destroy the e2e VMs (VMIDs 9901-9903 only, disks purged). Safe when they are absent.
+# Usage: ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/e2e_down.yml -i inventory/e2e.yml
+- name: Destroy e2e VMs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [e2e_vars.yml]
+  tasks:
+    - name: Preflight
+      ansible.builtin.include_tasks: tasks/preflight.yml
+
+    - name: List VMs on the node
+      ansible.builtin.include_tasks: tasks/pve_api.yml
+      vars:
+        pve_method: GET
+        pve_path: "/nodes/{{ e2e_node }}/qemu"
+    - name: Remember existing VMIDs
+      ansible.builtin.set_fact:
+        existing_vmids: "{{ pve_result.json.data | map(attribute='vmid') | map('int') | list }}"
+
+    - name: Destroy each e2e VM that exists
+      ansible.builtin.include_tasks: tasks/vm_destroy.yml
+      vars:
+        vmid: "{{ hostvars[vm_name].vmid | int }}"
+      loop: "{{ groups['pve'] }}"
+      loop_control: {loop_var: vm_name}
+      when: hostvars[vm_name].vmid | int in existing_vmids
+
+    - name: Forget throwaway host keys
+      ansible.builtin.file:
+        path: "{{ e2e_cache }}/known_hosts"
+        state: absent

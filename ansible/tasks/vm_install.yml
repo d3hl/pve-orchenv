@@ -1,0 +1,40 @@
+---
+# Inputs: vm_name. Install one node, then shrink it to steady-state RAM (Ruling D:
+# 15.6 GB hypervisor, so installs run one at a time at 6144 MB, then 3072 MB each).
+- name: Reset install state of {{ vm_name }}
+  ansible.builtin.uri:
+    url: "{{ e2e_boot_url }}/reset/{{ vm_name }}"
+    method: POST
+    status_code: 200
+  changed_when: true
+- name: Start VM {{ vm_name }}
+  ansible.builtin.include_tasks: vm_power.yml
+  vars:
+    vmid: "{{ hostvars[vm_name].vmid | int }}"
+    power_action: start
+- name: Wait until installed, node {{ vm_name }}
+  ansible.builtin.uri:
+    url: "{{ e2e_boot_url }}/status"
+    return_content: true
+  register: boot_status
+  until: boot_status.json[vm_name].state | default('') == 'installed'
+  retries: "{{ e2e_install_retries }}"
+  delay: 20
+  changed_when: false
+- name: Shut down {{ vm_name }}
+  ansible.builtin.include_tasks: vm_power.yml
+  vars:
+    vmid: "{{ hostvars[vm_name].vmid | int }}"
+    power_action: shutdown
+- name: Set steady-state memory of {{ vm_name }}
+  ansible.builtin.include_tasks: pve_api.yml
+  vars:
+    vmid: "{{ hostvars[vm_name].vmid | int }}"
+    pve_method: PUT
+    pve_path: "/nodes/{{ e2e_node }}/qemu/{{ vmid }}/config"
+    pve_body: {memory: "{{ e2e_steady_memory }}"}
+- name: Start again {{ vm_name }}
+  ansible.builtin.include_tasks: vm_power.yml
+  vars:
+    vmid: "{{ hostvars[vm_name].vmid | int }}"
+    power_action: start
