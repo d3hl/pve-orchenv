@@ -1,0 +1,4 @@
+FROM docker.io/library/alpine:3
+RUN apk add --no-cache dnsmasq
+# TFTP only (port=0 disables DNS/DHCP). Mount the site dist dir read-only at /srv/tftp.
+CMD ["dnsmasq", "--keep-in-foreground", "--port=0", "--enable-tftp", "--tftp-root=/srv/tftp", "--log-facility=-", "--log-queries"]

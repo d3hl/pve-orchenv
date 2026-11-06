@@ -1,0 +1,45 @@
+# Template: rendered per site by bootserver/bootserver.sh (envsubst). Do not apply directly.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pve-orchenv-bootserver
+spec:
+  hostNetwork: true
+  containers:
+    - name: tftp
+      image: localhost/pve-orchenv-tftp:${IMAGE_TAG}
+      imagePullPolicy: Never
+      securityContext: {seLinuxOptions: {type: spc_t}}
+      volumeMounts:
+        - {name: dist, mountPath: /srv/tftp, readOnly: true}
+    - name: web
+      image: localhost/pve-orchenv-web:${IMAGE_TAG}
+      imagePullPolicy: Never
+      securityContext: {seLinuxOptions: {type: spc_t}}
+      env:
+        - {name: HTTP_PORT, value: "${HTTP_PORT}"}
+      volumeMounts:
+        - {name: dist, mountPath: /srv/dist, readOnly: true}
+    - name: answer
+      image: localhost/pve-orchenv-answer:${IMAGE_TAG}
+      imagePullPolicy: Never
+      securityContext: {seLinuxOptions: {type: spc_t}}
+      env:
+        - {name: INVENTORY_FILES, value: /inventory/hosts.yml}
+        - {name: VAULT_PATH, value: /inventory/group_vars/all/vault.yml}
+        - {name: VAULT_PASSWORD_FILE, value: /run/secrets/vault_password/vault_password}
+        - {name: STATE_PATH, value: /state/state.json}
+        - {name: BASE_URL, value: "${BASE_URL}"}
+      volumeMounts:
+        - {name: inventory, mountPath: /inventory, readOnly: true}
+        - {name: state, mountPath: /state}
+        - {name: vault-password, mountPath: /run/secrets/vault_password, readOnly: true}
+  volumes:
+    - name: dist
+      hostPath: {path: "${DIST_DIR}", type: Directory}
+    - name: inventory
+      hostPath: {path: "${INVENTORY_DIR}", type: Directory}
+    - name: state
+      persistentVolumeClaim: {claimName: pve-orchenv-state}
+    - name: vault-password
+      secret: {secretName: vault_password}

@@ -19,3 +19,10 @@ test:
 .PHONY: check
 check:
 	build/check.sh
+
+# Boot server pod (TFTP + HTTP + answer service). Usage: make bootserver-up SITE=e2e
+# Rebuilt dist/<site>? Run bootserver-up again (it mounts the resolved build dir).
+.PHONY: bootserver-up bootserver-down bootserver-deploy
+bootserver-up bootserver-down bootserver-deploy:
+	@test -n "$(SITE)" || { echo "usage: make $@ SITE=<site>" >&2; exit 2; }
+	bootserver/bootserver.sh $(patsubst bootserver-%,%,$@) $(SITE)

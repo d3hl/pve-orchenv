@@ -1,0 +1,9 @@
+FROM docker.io/library/python:3.13-slim
+WORKDIR /app
+COPY pyproject.toml ./
+COPY answer ./answer
+RUN pip install --no-cache-dir gunicorn==23.0.0 . && mkdir -p /state
+ENV PYTHONUNBUFFERED=1
+# ONE sync worker, one thread: the state store does unlocked read-modify-write.
+CMD ["gunicorn", "--workers", "1", "--threads", "1", "--worker-class", "sync", \
+     "--bind", "127.0.0.1:8000", "--timeout", "30", "--access-logfile", "-", "answer.wsgi:app"]
