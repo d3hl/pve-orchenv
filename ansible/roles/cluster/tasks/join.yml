@@ -86,6 +86,7 @@
         {{ ('--link1 ' ~ corosync_link1_ip) if corosync_link1_ip is defined else '' }}
       changed_when: true
 
+    # Membership is matched by node name; main.yml asserts name == inventory_hostname on every node.
     - name: Wait until the target member and this node both list this node and quorum holds
       ansible.builtin.shell: pvecm status && pvecm nodes
       delegate_to: "{{ item | default(inventory_hostname) }}"
@@ -96,4 +97,18 @@
       retries: 30
       delay: 2
       changed_when: false
+      failed_when: false
       loop: "{{ [join_target, inventory_hostname] }}"
+
+    - name: Joined node is visible and the cluster is quorate on both sides
+      ansible.builtin.assert:
+        that: >-
+          item.rc == 0 and item.stdout is search('(?m)^Quorate:\s+Yes')
+          and item.stdout is search('(?m)\s' ~ inventory_hostname ~ '(\s|$|\(local\))')
+        fail_msg: >-
+          After 30 tries {{ inventory_hostname }} never became visible and quorate as seen from {{ item.item }}
+          (rc={{ item.rc }}). Check corosync on both nodes; nothing was rolled back.
+        quiet: true
+      loop: "{{ join_settled.results }}"
+      loop_control:
+        label: "seen from {{ item.item }}"

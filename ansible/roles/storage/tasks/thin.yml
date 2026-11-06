@@ -21,13 +21,35 @@
     - name: Resolve the disks
       ansible.builtin.include_tasks: disks.yml
 
+    - name: Read the PVs of an existing empty VG
+      ansible.builtin.command: "pvs --noheadings -o pv_name -S vg_name={{ storage_pool.vg | quote }}"
+      register: storage_vg_pvs
+      changed_when: false
+      check_mode: false
+      when: storage_vg.rc == 0
+
+    - name: Resolve the requested disks to kernel device paths
+      ansible.builtin.command: "readlink -f -- {{ item | quote }}"
+      register: storage_dev_real
+      changed_when: false
+      check_mode: false
+      loop: "{{ storage_devices }}"
+
+    - name: An existing VG must sit on exactly the requested disks
+      ansible.builtin.assert:
+        that: (storage_vg_pvs.stdout_lines | map('trim') | sort | list) == (storage_dev_real.results | map(attribute='stdout') | sort | list)
+        fail_msg: "VG {{ storage_pool.vg }} exists on other disks than the serials {{ storage_pool.serials }}; refusing to touch it"
+        quiet: true
+      when: storage_vg.rc == 0
+
     - name: Create the volume group
       ansible.builtin.command:
         argv: "{{ ['vgcreate', storage_pool.vg] + storage_devices }}"
       changed_when: true
       when: storage_vg.rc != 0
 
+    # 95%FREE leaves headroom for the pool metadata and its spare so lvcreate cannot fail on rounding.
     - name: Create the thin pool
       ansible.builtin.command:
-        argv: "{{ ['lvcreate', '--type', 'thin-pool', '-l', '100%FREE', '-n', storage_pool.pool, storage_pool.vg] }}"
+        argv: "{{ ['lvcreate', '--type', 'thin-pool', '-l', '95%FREE', '-n', storage_pool.pool, storage_pool.vg] }}"
       changed_when: true

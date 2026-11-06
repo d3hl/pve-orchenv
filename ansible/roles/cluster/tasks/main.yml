@@ -26,6 +26,26 @@
          if cluster_corosync_conf.stat.exists else '' }}
     pve_cluster_quorate: "{{ cluster_status.rc == 0 and cluster_status.stdout is search('(?m)^Quorate:\\s+Yes') }}"
 
+- name: The Proxmox node name must equal the inventory hostname (membership is matched by name)
+  ansible.builtin.assert:
+    that: ansible_facts['hostname'] == inventory_hostname
+    fail_msg: "node name {{ ansible_facts['hostname'] }} differs from inventory hostname {{ inventory_hostname }}"
+    quiet: true
+
+# An unreachable host silently leaves the play; if it was the only clustered node a fresh one
+# would create a second cluster. Fail closed before any create/join decision.
+- name: Every pve host must be reached and report its cluster state
+  ansible.builtin.assert:
+    that: missing_hosts | length == 0
+    fail_msg: >-
+      cluster role needs every pve host reachable to decide create vs join;
+      unreachable or without cluster state: {{ missing_hosts }}
+    quiet: true
+  vars:
+    undiscovered: "{{ ansible_play_hosts | map('extract', hostvars) | rejectattr('pve_cluster_name', 'defined') | map(attribute='inventory_hostname') | list }}"
+    missing_hosts: "{{ groups['pve'] | difference(ansible_play_hosts) | union(undiscovered) | list }}"
+  run_once: true
+
 - name: Refuse to continue when a node is in a foreign or non-quorate cluster
   ansible.builtin.assert:
     that: >-

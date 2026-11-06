@@ -14,6 +14,7 @@
 
 - name: Cluster (create on the primary when no node is clustered yet)
   hosts: pve
+  any_errors_fatal: true
   tags: [cluster]
   roles:
     - role: cluster
@@ -22,6 +23,7 @@
 - name: Cluster (join the remaining nodes)
   hosts: pve
   serial: 1
+  any_errors_fatal: true
   tags: [cluster]
   tasks:
     - name: Join the cluster
