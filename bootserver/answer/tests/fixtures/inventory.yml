@@ -1,0 +1,18 @@
+all:
+  vars:
+    domain: lab.test
+  children:
+    pve:
+      hosts:
+        pve1:
+          install: true
+          mac: "aa:bb:cc:dd:ee:01"
+          mgmt_ip: 10.0.0.11/24
+          root_disks: {fs: zfs, raid: raid1, serials: ["SERIALA1", "SERIALA2"]}
+          cluster_role: primary
+        pve2:
+          install: true
+          mac: "AA:BB:CC:DD:EE:02"
+          mgmt_ip: 10.0.0.12/24
+          root_disks: {fs: ext4, serials: ["SERIALB1"]}
+          cluster_role: member
