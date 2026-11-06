@@ -43,6 +43,14 @@ if [[ "${1:-}" == "--inner" ]]; then
     bin-x86_64-efi/ipxe.efi bin/undionly.kpxe >"$WORK/ipxe-build.log" 2>&1 \
     || { tail -30 "$WORK/ipxe-build.log" >&2; exit 1; }
   cp "$WORK/ipxe/src/bin-x86_64-efi/ipxe.efi" "$WORK/ipxe/src/bin/undionly.kpxe" "$WORK/out/"
+  # UEFI-only iPXE ISO (genfsimg wants isolinux for BIOS): FAT ESP image as El Torito EFI entry.
+  mkdir -p "$WORK/iso"
+  truncate -s 4M "$WORK/iso/efi.img"
+  mformat -i "$WORK/iso/efi.img" -F ::
+  mmd -i "$WORK/iso/efi.img" ::/EFI ::/EFI/BOOT
+  mcopy -i "$WORK/iso/efi.img" "$WORK/out/ipxe.efi" ::/EFI/BOOT/BOOTX64.EFI
+  xorriso -as mkisofs -quiet -V IPXE -o "$WORK/out/ipxe.iso" \
+    -eltorito-platform efi -e efi.img -no-emul-boot "$WORK/iso"
   # shellcheck disable=SC2016
   envsubst '${BOOTSERVER_HOST} ${BOOTSERVER_HTTP_PORT}' < build/boot.ipxe.tmpl > "$WORK/out/boot.ipxe"
   exit 0

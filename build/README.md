@@ -6,6 +6,7 @@
 - The ISO is downloaded to `cache/` and verified before `dist/` is touched; a mismatch exits 1.
 - `PVE_ISO_PATH=<path>` overrides the ISO location (still checksum-verified).
 - Requires podman. All tooling (proxmox-auto-install-assistant, xorriso, iPXE toolchain) runs in `build/Containerfile`.
+- Nested e2e VMs boot `ipxe.iso` (EFI) because of the OVMF/virtio PXE quirk on the test host; real hardware uses TFTP `ipxe.efi`/`undionly.kpxe`.
 - iPXE has `dhcp` + `chain http://$BOOTSERVER_HOST:$BOOTSERVER_HTTP_PORT/boot.ipxe` embedded, so no DHCP user-class rules are needed on the router.
 
 ## Router setup
