@@ -1,0 +1,13 @@
+#!/bin/sh
+# Managed by Ansible (base role).
+# Disable the "No valid subscription" dialog in the PVE web UI. Idempotent: it only edits
+# files that still contain the dialog, and prints "patched" when it changed something.
+dir=/usr/share/javascript/proxmox-widget-toolkit
+for f in "$dir/proxmoxlib.js" "$dir/proxmoxlib.min.js"; do
+    [ -f "$f" ] || continue
+    if perl -0777 -ne 'exit(/Ext\.Msg\.show\(\{\s*title:\s*gettext\((["\x27])No valid subscription\1/ ? 0 : 1)' "$f"; then
+        perl -0777 -pi -e 's/Ext\.Msg\.show\(\{(\s*title:\s*gettext\((["\x27])No valid subscription\2)/void({$1/g' "$f"
+        echo "patched $f"
+    fi
+done
+exit 0

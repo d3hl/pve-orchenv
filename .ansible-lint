@@ -5,3 +5,7 @@ exclude_paths:
   - cache/
   - dist/
   - .superpowers/
+# Cross-role interface variables (pve_users, ntp_servers, ...) are shared on purpose, so the
+# role-prefix naming rule does not fit this repo.
+skip_list:
+  - var-naming[no-role-prefix]

@@ -1,0 +1,20 @@
+---
+# Plays run in order: base -> network -> cluster -> storage -> access.
+# network, cluster and storage are inserted between the two plays below by their own tasks.
+- name: Base configuration
+  hosts: pve
+  tags: [base]
+  roles:
+    - role: base
+
+# Users and tokens live in the shared /etc/pve/user.cfg, so they are created once, after the
+# cluster exists (before a join they would be lost). Still part of the base role.
+- name: Users, ACLs and API tokens
+  hosts: pve
+  run_once: true
+  tags: [access, base]
+  tasks:
+    - name: Create users, ACLs and tokens
+      ansible.builtin.import_role:
+        name: base
+        tasks_from: access

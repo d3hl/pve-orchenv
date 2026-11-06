@@ -5,3 +5,20 @@
 timezone: Asia/Ho_Chi_Minh
 keyboard: en-us
 country: vn
+
+ntp_servers:
+  - 0.debian.pool.ntp.org
+  - 1.debian.pool.ntp.org
+  - 2.debian.pool.ntp.org
+
+# Patch out the "No valid subscription" dialog (and keep it patched across package updates).
+pve_remove_nag: true
+
+# Users get `role` on `path`. pveum creates them in realm pve (no password: use tokens).
+pve_users:
+  - {userid: "automation@pve", role: "Administrator", path: "/"}
+
+# Tokens are created only when missing; the secret goes to ansible/artifacts/<host>-<tokenid>.txt.
+# privsep false: the token inherits the user's permissions.
+pve_tokens:
+  - {userid: "automation@pve", tokenid: "ansible", privsep: false}

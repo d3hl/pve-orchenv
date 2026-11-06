@@ -1,0 +1,86 @@
+---
+# Users, ACLs and API tokens live in /etc/pve/user.cfg, which is cluster-wide. Run this once
+# (run_once) on a cluster member after the cluster exists, or they are lost when a node joins.
+- name: List existing users
+  ansible.builtin.command: pveum user list --output-format json
+  register: pve_user_list
+  changed_when: false
+  check_mode: false
+
+- name: List existing ACLs
+  ansible.builtin.command: pveum acl list --output-format json
+  register: pve_acl_list
+  changed_when: false
+  check_mode: false
+
+- name: Create missing users
+  ansible.builtin.command: "pveum user add {{ item.userid }}"
+  register: pve_user_add
+  changed_when: true
+  when: item.userid not in (pve_user_list.stdout | from_json | map(attribute='userid') | list)
+  loop: "{{ pve_users }}"
+  loop_control:
+    label: "{{ item.userid }}"
+
+- name: Grant missing ACLs
+  ansible.builtin.command: "pveum acl modify {{ item.path }} --users {{ item.userid }} --roles {{ item.role }}"
+  changed_when: true
+  when: >-
+    pve_acl_list.stdout | from_json
+    | selectattr('type', 'eq', 'user') | selectattr('ugid', 'eq', item.userid)
+    | selectattr('path', 'eq', item.path) | selectattr('roleid', 'eq', item.role) | list | length == 0
+  loop: "{{ pve_users }}"
+  loop_control:
+    label: "{{ item.userid }}"
+
+- name: List existing tokens
+  ansible.builtin.command: "pveum user token list {{ item.userid }} --output-format json"
+  register: pve_token_list
+  changed_when: false
+  check_mode: false
+  loop: "{{ pve_tokens }}"
+  loop_control:
+    label: "{{ item.userid }}!{{ item.tokenid }}"
+
+- name: Create missing tokens
+  ansible.builtin.command: >-
+    pveum user token add {{ item.item.userid }} {{ item.item.tokenid }}
+    --privsep {{ 1 if item.item.privsep | default(false) else 0 }} --output-format json
+  register: pve_token_add
+  changed_when: true
+  no_log: true
+  when: item.item.tokenid not in (item.stdout | from_json | map(attribute='tokenid') | list)
+  loop: "{{ pve_token_list.results }}"
+  loop_control:
+    label: "{{ item.item.userid }}!{{ item.item.tokenid }}"
+
+- name: Ensure the artifacts directory exists
+  ansible.builtin.file:
+    path: "{{ pve_artifacts_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Write new token secrets to ansible/artifacts (mode 0600)
+  ansible.builtin.copy:
+    dest: "{{ pve_artifacts_dir }}/{{ inventory_hostname }}-{{ item.item.item.tokenid }}.txt"
+    content: |
+      {{ (item.stdout | from_json)['full-tokenid'] }}
+      {{ (item.stdout | from_json)['value'] }}
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: item is not skipped
+  loop: "{{ pve_token_add.results }}"
+  loop_control:
+    label: "{{ item.item.item.tokenid }}"
+
+- name: Remind to store new token secrets in the vault
+  ansible.builtin.debug:
+    msg: >-
+      New API token(s) created; secrets are in ansible/artifacts/ (gitignored):
+      {{ pve_token_add.results | rejectattr('skipped', 'defined') | map(attribute='item.item.tokenid') | list }}.
+      Move them into the vault, then delete the files.
+  when: pve_token_add.results | rejectattr('skipped', 'defined') | list | length > 0

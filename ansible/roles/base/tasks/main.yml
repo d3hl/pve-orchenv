@@ -1,0 +1,126 @@
+---
+- name: Write resolv.conf (search domain and the full resolver list)
+  ansible.builtin.template:
+    src: resolv.conf.j2
+    dest: /etc/resolv.conf
+    mode: "0644"
+    owner: root
+    group: root
+
+- name: Ensure /etc/hosts has an entry for every inventory node
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^\S+\s+{{ (item ~ "." ~ domain) | regex_escape }}(\s|$)'
+    line: "{{ hostvars[item].mgmt_ip | split('/') | first }} {{ item }}.{{ domain }} {{ item }}"
+    state: present
+  loop: "{{ groups['pve'] }}"
+
+- name: Disable enterprise repositories
+  ansible.builtin.deb822_repository:
+    name: "{{ item.name }}"
+    types: deb
+    uris: "{{ item.uris }}"
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: "{{ item.components }}"
+    signed_by: "{{ pve_keyring }}"
+    enabled: false
+  loop: "{{ pve_disabled_repos }}"
+
+- name: Enable the pve-no-subscription repository
+  ansible.builtin.deb822_repository:
+    name: pve-no-subscription
+    types: deb
+    uris: http://download.proxmox.com/debian/pve
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: pve-no-subscription
+    signed_by: "{{ pve_keyring }}"
+    enabled: true
+
+- name: Full upgrade
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: dist
+    autoremove: false
+
+- name: Install chrony
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+
+- name: Drop the default Debian NTP pool
+  ansible.builtin.lineinfile:
+    path: /etc/chrony/chrony.conf
+    regexp: '^pool\s'
+    state: absent
+  notify: Restart chrony
+
+- name: Configure NTP servers
+  ansible.builtin.template:
+    src: chrony-pve.sources.j2
+    dest: /etc/chrony/sources.d/pve.sources
+    mode: "0644"
+    owner: root
+    group: root
+  notify: Restart chrony
+
+- name: Enable chrony
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: true
+
+- name: Restrict SSH to key authentication
+  block:
+    - name: Install the sshd drop-in
+      ansible.builtin.template:
+        src: sshd-hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/10-pve-hardening.conf
+        mode: "0644"
+        owner: root
+        group: root
+      register: sshd_dropin
+      notify: Reload sshd
+
+    - name: Validate the sshd configuration
+      ansible.builtin.command: sshd -t
+      changed_when: false
+  rescue:
+    - name: Remove the broken sshd drop-in
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/10-pve-hardening.conf
+        state: absent
+    - name: Stop, the sshd drop-in failed validation
+      ansible.builtin.fail:
+        msg: sshd -t rejected the hardening drop-in; it was removed and sshd was not reloaded.
+
+- name: Install the subscription notice patch
+  when: pve_remove_nag
+  block:
+    - name: Install the patch script
+      ansible.builtin.copy:
+        src: pve-no-nag
+        dest: /usr/local/sbin/pve-no-nag
+        mode: "0755"
+        owner: root
+        group: root
+
+    - name: Install the apt post-invoke hook
+      ansible.builtin.template:
+        src: 99-pve-no-nag.j2
+        dest: /etc/apt/apt.conf.d/99-pve-no-nag
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: Apply the patch
+      ansible.builtin.command: /usr/local/sbin/pve-no-nag
+      register: nag_patch
+      changed_when: "'patched' in nag_patch.stdout"
+
+- name: Remove the subscription notice hook
+  when: not pve_remove_nag
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: [/etc/apt/apt.conf.d/99-pve-no-nag, /usr/local/sbin/pve-no-nag]

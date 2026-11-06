@@ -1,0 +1,4 @@
+# Managed by Ansible (base role)
+{% for server in ntp_servers %}
+server {{ server }} iburst
+{% endfor %}

@@ -1,0 +1,173 @@
+---
+# Assertions for the base role. Run: ansible-playbook -i inventory/e2e.yml ansible/tests/verify_base.yml
+# Token checks run on the host the access play ran on (run_once: the first host of the play).
+- name: Verify base role
+  hosts: pve
+  gather_facts: false
+  vars:
+    nag_js_files:
+      - /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
+      - /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.min.js
+    # Set false once the token secret files have been moved into the vault.
+    verify_artifacts: true
+  tasks:
+    - name: Collect enterprise repo state
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -o pipefail
+          # Print every .sources file that targets enterprise.proxmox.com and lacks "Enabled: no".
+          for f in /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+            [ -e "$f" ] || continue
+            if grep -q enterprise.proxmox.com "$f" && ! grep -qiE '^Enabled:[[:space:]]*(no|false)' "$f"; then echo "$f"; fi
+          done
+      register: enterprise_enabled
+      changed_when: false
+
+    - name: No enterprise repository is enabled
+      ansible.builtin.assert:
+        that: enterprise_enabled.stdout | trim == ''
+        fail_msg: "Enabled enterprise repos: {{ enterprise_enabled.stdout }}"
+
+    - name: The pve-no-subscription repository is present
+      ansible.builtin.command: grep -rl pve-no-subscription /etc/apt/sources.list.d/
+      register: nosub
+      changed_when: false
+
+    - name: Nothing left to upgrade
+      ansible.builtin.command: apt-get -s dist-upgrade  # noqa: command-instead-of-module
+      register: sim
+      changed_when: false
+
+    - name: Simulation reports 0 upgrades
+      ansible.builtin.assert:
+        that: sim.stdout is search('(?m)^0 upgraded, 0 newly installed')
+        fail_msg: "{{ sim.stdout_lines | select('search', 'upgraded,') | list }}"
+
+    - name: Read chrony sources
+      ansible.builtin.command: chronyc sources
+      register: chrony_sources
+      changed_when: false
+
+    - name: Read chrony server list
+      ansible.builtin.slurp:
+        src: /etc/chrony/sources.d/pve.sources
+      register: chrony_cfg
+
+    - name: Chrony is configured with the servers and lists them
+      ansible.builtin.assert:
+        that:
+          - chrony_cfg.content | b64decode is search('(?m)^server ' ~ item | regex_escape ~ ' ')
+          - chrony_sources.stdout_lines | select('match', '^[\^=]') | list | length > 0
+        fail_msg: "chronyc sources: {{ chrony_sources.stdout }}"
+      loop: "{{ ntp_servers }}"
+
+    - name: Read /etc/hosts
+      ansible.builtin.slurp:
+        src: /etc/hosts
+      register: etc_hosts
+
+    - name: /etc/hosts has every node
+      ansible.builtin.assert:
+        that: >-
+          etc_hosts.content | b64decode is search(
+          '(?m)^' ~ (hostvars[item].mgmt_ip | split('/') | first | regex_escape)
+          ~ '\s+' ~ item ~ '\.' ~ domain ~ '\s+' ~ item ~ '(\s|$)')
+        fail_msg: "{{ item }} missing from /etc/hosts"
+      loop: "{{ groups['pve'] }}"
+
+    - name: Read resolv.conf
+      ansible.builtin.slurp:
+        src: /etc/resolv.conf
+      register: resolv
+
+    - name: Resolv.conf has the search domain and every resolver
+      ansible.builtin.assert:
+        that:
+          - resolv.content | b64decode is search('(?m)^search ' ~ domain | regex_escape ~ '$')
+          - resolv.content | b64decode is search('(?m)^nameserver ' ~ item | regex_escape ~ '$')
+      loop: "{{ dns }}"
+
+    - name: Read effective sshd configuration
+      ansible.builtin.command: sshd -T
+      register: sshd_t
+      changed_when: false
+
+    - name: SSH password authentication is off
+      ansible.builtin.assert:
+        that: sshd_t.stdout is search('(?m)^passwordauthentication no$')
+
+    - name: Check the no-nag hook and patch
+      when: pve_remove_nag
+      block:
+        - name: Hook file and patch script exist
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          register: nag_files
+          loop: [/etc/apt/apt.conf.d/99-pve-no-nag, /usr/local/sbin/pve-no-nag]
+
+        - name: Hook file and patch script are in place
+          ansible.builtin.assert:
+            that: item.stat.exists
+            fail_msg: "{{ item.item }} is missing"
+          loop: "{{ nag_files.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: Count unpatched subscription dialogs
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: |
+              perl -0777 -ne '$n++ while /Ext\.Msg\.show\(\{\s*title:\s*gettext\((["\x27])No valid subscription\1/g; END { print $n+0 }' {{ item }}
+          register: nag_left
+          changed_when: false
+          loop: "{{ nag_js_files }}"
+
+        - name: The widget toolkit JS has no subscription dialog
+          ansible.builtin.assert:
+            that: item.stdout == '0'
+            fail_msg: "{{ item.item }} still shows the subscription dialog"
+          loop: "{{ nag_left.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+- name: Verify users and tokens on the access host
+  hosts: pve
+  gather_facts: false
+  run_once: true
+  tasks:
+    - name: List API tokens
+      ansible.builtin.command: "pveum user token list {{ item.userid }} --output-format json"
+      register: tokens
+      changed_when: false
+      loop: "{{ pve_tokens }}"
+      loop_control:
+        label: "{{ item.userid }}!{{ item.tokenid }}"
+
+    - name: Every pve_tokens entry exists
+      ansible.builtin.assert:
+        that: item.item.tokenid in (item.stdout | from_json | map(attribute='tokenid') | list)
+        fail_msg: "token {{ item.item.userid }}!{{ item.item.tokenid }} missing"
+      loop: "{{ tokens.results }}"
+      loop_control:
+        label: "{{ item.item.userid }}!{{ item.item.tokenid }}"
+
+    - name: Stat token secret files
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../artifacts/{{ inventory_hostname }}-{{ item.tokenid }}.txt"
+      delegate_to: localhost
+      register: secret_files
+      loop: "{{ pve_tokens }}"
+      loop_control:
+        label: "{{ item.tokenid }}"
+
+    - name: Secret files exist with mode 0600
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.mode == '0600'
+        fail_msg: "{{ item.invocation.module_args.path | basename }} missing or not 0600"
+      loop: "{{ secret_files.results }}"
+      loop_control:
+        label: "{{ item.item.tokenid }}"
+      when: verify_artifacts | default(true)

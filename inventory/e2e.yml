@@ -5,7 +5,7 @@ all:
   vars:
     domain: e2e.internal
     gateway: 10.203.1.254
-    dns: [10.203.1.254]
+    dns: [10.203.1.107]
     cluster_name: e2e
   children:
     pve:

@@ -1,0 +1,2 @@
+// Managed by Ansible (base role): re-apply the subscription notice patch after package updates.
+DPkg::Post-Invoke { "[ -x /usr/local/sbin/pve-no-nag ] && /usr/local/sbin/pve-no-nag || true"; };

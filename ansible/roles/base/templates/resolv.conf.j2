@@ -1,0 +1,5 @@
+# Managed by Ansible (base role)
+search {{ domain }}
+{% for ns in dns %}
+nameserver {{ ns }}
+{% endfor %}

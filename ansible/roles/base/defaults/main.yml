@@ -1,0 +1,19 @@
+---
+# Cross-site settings (ntp_servers, pve_users, pve_tokens, pve_remove_nag) live in
+# inventory/group_vars/all/main.yml; these are role-internal defaults.
+pve_remove_nag: true
+pve_users: []
+pve_tokens: []
+ntp_servers: [0.debian.pool.ntp.org]
+
+# Repositories to switch off. Each is rewritten with Enabled: no.
+pve_disabled_repos:
+  - name: pve-enterprise
+    uris: https://enterprise.proxmox.com/debian/pve
+    components: pve-enterprise
+  - name: ceph
+    uris: https://enterprise.proxmox.com/debian/ceph-squid
+    components: enterprise
+
+pve_keyring: /usr/share/keyrings/proxmox-archive-keyring.gpg
+pve_artifacts_dir: "{{ role_path }}/../../artifacts"
