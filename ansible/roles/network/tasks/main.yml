@@ -1,0 +1,149 @@
+---
+# Commit-confirm apply: arm a systemd timer that restores the old config, apply, and only stop the
+# timer once the host answers again. Everything is skipped when /etc/network/interfaces is unchanged.
+- name: Collect the physical NICs (bridges, bonds and tap devices share MACs, so they are left out)
+  ansible.builtin.set_fact:
+    network_candidates: >-
+      {{ ansible_facts['interfaces']
+         | reject('match', '^(lo|vmbr|bond|veth|tap|fwbr|fwpr|fwln)')
+
+         | map('extract', ansible_facts)
+         | selectattr('macaddress', 'defined') | list }}
+
+- name: Resolve NIC names from MAC addresses (the permanent MAC wins, bonded slaves share one MAC)
+  ansible.builtin.set_fact:
+    network_nics: >-
+      {%- set found = [] -%}
+      {%- for wanted in (network.bond.slaves_macs if network.bond is defined else [mac]) -%}
+      {%- for nic in network_candidates -%}
+      {%- if (nic.perm_macaddress | default(nic.macaddress)) | lower == wanted | lower -%}
+      {%- set _ = found.append(nic.device) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ found | to_json }}
+
+- name: Every wanted MAC matched exactly one NIC
+  ansible.builtin.assert:
+    that:
+      - network_nics | from_json | length == (network.bond.slaves_macs if network.bond is defined else [mac]) | length
+    fail_msg: >-
+      Could not map {{ network.bond.slaves_macs if network.bond is defined else [mac] }} to NICs
+      (found {{ network_nics }}).
+    quiet: true
+
+- name: Keep the NIC names as a list
+  ansible.builtin.set_fact:
+    network_nics: "{{ network_nics | from_json }}"
+
+- name: Install the rollback script
+  ansible.builtin.copy:
+    src: net-rollback.sh
+    dest: /usr/local/sbin/net-rollback.sh
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Check whether the interfaces file would change
+  ansible.builtin.template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces
+    mode: "0644"
+    owner: root
+    group: root
+  check_mode: true
+  register: network_plan
+
+- name: Apply the new network configuration with automatic rollback
+  # In --check mode the plan task above already reports the pending change (with --diff).
+  when: network_plan is changed and not ansible_check_mode
+  block:
+    - name: Make sure no earlier rollback unit is left over
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop: [net-rollback.timer, net-rollback.service]
+      failed_when: false  # the units normally do not exist
+
+    - name: Create the backup directory
+      ansible.builtin.file:
+        path: "{{ network_rollback_dir }}"
+        state: directory
+        mode: "0700"
+        owner: root
+        group: root
+
+    - name: Back up the current interfaces file
+      ansible.builtin.copy:
+        src: /etc/network/interfaces
+        dest: "{{ network_rollback_dir }}/interfaces.bak"
+        remote_src: true
+        mode: "0600"
+        owner: root
+        group: root
+
+    - name: Arm the rollback timer BEFORE touching the network
+      ansible.builtin.command: >-
+        systemd-run --unit net-rollback --on-active={{ network_rollback_seconds }}
+        /usr/local/sbin/net-rollback.sh
+      changed_when: true
+
+    - name: Write the new interfaces file and syntax-check it
+      block:
+        - name: Write the interfaces file
+          ansible.builtin.template:
+            src: interfaces.j2
+            dest: /etc/network/interfaces
+            mode: "0644"
+            owner: root
+            group: root
+
+        - name: Syntax check (ifreload -a -s)
+          ansible.builtin.command: ifreload -a -s
+          changed_when: false
+      rescue:
+        - name: Restore the previous interfaces file
+          ansible.builtin.copy:
+            src: "{{ network_rollback_dir }}/interfaces.bak"
+            dest: /etc/network/interfaces
+            remote_src: true
+            mode: "0644"
+            owner: root
+            group: root
+
+        - name: Disarm the rollback timer (nothing was applied)
+          ansible.builtin.systemd:
+            name: net-rollback.timer
+            state: stopped
+
+        - name: Fail, the new network configuration did not validate
+          ansible.builtin.fail:
+            msg: >-
+              ifreload -a -s rejected the new configuration, the previous one was restored:
+              {{ ansible_failed_result.stderr | default(ansible_failed_result.msg | default('')) }}
+
+    - name: Apply the configuration (the connection may drop)
+      ansible.builtin.command: ifreload -a
+      async: 120
+      poll: 0
+      changed_when: true
+      register: network_apply
+
+    - name: Wait for the host to answer again
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: "{{ network_reconnect_timeout }}"
+
+    - name: Check the apply finished cleanly
+      ansible.builtin.async_status:
+        jid: "{{ network_apply.ansible_job_id }}"
+      register: network_apply_result
+      until: network_apply_result is finished
+      retries: 10
+      delay: 3
+      failed_when: network_apply_result.rc | default(1) != 0
+
+    - name: Connection confirmed, disarm the rollback timer
+      ansible.builtin.systemd:
+        name: net-rollback.timer
+        state: stopped

@@ -1,0 +1,51 @@
+# Managed by Ansible (role network). Changes are applied with automatic rollback.
+auto lo
+iface lo inet loopback
+{% for nic in network_nics %}
+
+iface {{ nic }} inet manual
+{% endfor %}
+{% if network.bond is defined %}
+
+auto bond0
+iface bond0 inet manual
+	bond-slaves {{ network_nics | join(' ') }}
+	bond-miimon 100
+	bond-mode {{ network.bond.mode | default('active-backup') }}
+{% if network.bond.mode | default('active-backup') == '802.3ad' %}
+	bond-xmit-hash-policy layer2+3
+{% endif %}
+{% endif %}
+
+auto vmbr0
+iface vmbr0 inet static
+	address {{ mgmt_ip }}
+	gateway {{ gateway }}
+	bridge-ports {{ 'bond0' if network.bond is defined else network_nics[0] }}
+	bridge-stp off
+	bridge-vlan-aware yes
+	bridge-vids 2-4094
+{% for br in network.bridges | default([]) %}
+
+auto {{ br.name }}
+iface {{ br.name }} inet {{ 'static' if br.address is defined else 'manual' }}
+{% if br.address is defined %}
+	address {{ br.address }}
+{% endif %}
+	bridge-ports {{ (br.ports | default([])) | join(' ') or 'none' }}
+	bridge-stp off
+{% if br.vlan_aware | default(false) %}
+	bridge-vlan-aware yes
+	bridge-vids 2-4094
+{% endif %}
+{% endfor %}
+{% for vlan in network.vlans | default([]) %}
+
+auto {{ vlan.raw | default('vmbr0') }}.{{ vlan.id }}
+iface {{ vlan.raw | default('vmbr0') }}.{{ vlan.id }} inet {{ 'static' if vlan.address is defined else 'manual' }}
+{% if vlan.address is defined %}
+	address {{ vlan.address }}
+{% endif %}
+{% endfor %}
+
+source /etc/network/interfaces.d/*

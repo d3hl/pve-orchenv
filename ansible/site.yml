@@ -1,11 +1,17 @@
 ---
 # Plays run in order: base -> network -> cluster -> storage -> access.
-# network, cluster and storage are inserted between the two plays below by their own tasks.
+# cluster and storage are inserted between the two plays below by their own tasks.
 - name: Base configuration
   hosts: pve
   tags: [base]
   roles:
     - role: base
+
+- name: Network configuration (commit-confirm with automatic rollback)
+  hosts: pve
+  tags: [network]
+  roles:
+    - role: network
 
 # Users and tokens live in the shared /etc/pve/user.cfg, so they are created once, after the
 # cluster exists (before a join they would be lost). Still part of the base role.

@@ -1,0 +1,56 @@
+---
+# Assertions for the network role. Run: ansible-playbook -i inventory/e2e.yml ansible/tests/verify_network.yml
+- name: Verify network role
+  hosts: pve
+  gather_facts: false
+  tasks:
+    - name: Read the VLAN filtering flag of vmbr0
+      ansible.builtin.slurp:
+        src: /sys/class/net/vmbr0/bridge/vlan_filtering
+      register: vlan_filtering
+
+    - name: Vmbr0 exists and is VLAN-aware
+      ansible.builtin.assert:
+        that: (vlan_filtering.content | b64decode | trim) == '1'
+        fail_msg: vmbr0 is missing or not VLAN-aware
+
+    - name: Read the interfaces file
+      ansible.builtin.slurp:
+        src: /etc/network/interfaces
+      register: interfaces_file
+
+    - name: The interfaces file declares bridge-vlan-aware yes
+      ansible.builtin.assert:
+        that: interfaces_file.content | b64decode is search('(?m)^\s*bridge-vlan-aware\s+yes$')
+
+    - name: List addresses of vmbr0
+      ansible.builtin.command: ip -j addr show dev vmbr0
+      register: vmbr0_addr
+      changed_when: false
+
+    - name: Management IP is on vmbr0
+      ansible.builtin.assert:
+        that: >-
+          (mgmt_ip | split('/') | first) in
+          (vmbr0_addr.stdout | from_json | map(attribute='addr_info') | flatten | map(attribute='local') | list)
+
+    - name: List default routes
+      ansible.builtin.command: ip -j route show default
+      register: default_route
+      changed_when: false
+
+    - name: The default route is via the gateway on vmbr0
+      ansible.builtin.assert:
+        that:
+          - (default_route.stdout | from_json | first).gateway == gateway
+          - (default_route.stdout | from_json | first).dev == 'vmbr0'
+
+    - name: List active net-rollback units
+      ansible.builtin.command: systemctl list-units 'net-rollback*' --plain --no-legend  # noqa: command-instead-of-module
+      register: rollback_units
+      changed_when: false
+
+    - name: No rollback unit is active
+      ansible.builtin.assert:
+        that: rollback_units.stdout | trim == ''
+        fail_msg: "{{ rollback_units.stdout }}"

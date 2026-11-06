@@ -1,0 +1,13 @@
+---
+# Host var `network` (all optional), see docs/superpowers/specs section 5:
+#   bond:    {slaves_macs: [mac, ...], mode: active-backup | 802.3ad}   vmbr0 then sits on bond0
+#   bridges: [{name, ports: [nic, ...], vlan_aware: bool, address: "ip/prefix"}]
+#   vlans:   [{id, raw: vmbr0, address: "ip/prefix"}]
+# The management NIC is found by `mac`; vmbr0 is always VLAN-aware and carries mgmt_ip and gateway.
+network: {}
+
+# Seconds before the rollback unit restores the previous config unless the connection is confirmed.
+network_rollback_seconds: 120
+# Seconds to wait for the host to answer again after ifreload.
+network_reconnect_timeout: 60
+network_rollback_dir: /var/lib/net-rollback
