@@ -58,13 +58,23 @@ case "$cmd" in up|down|deploy) ;; *) die "usage: $0 up|down|deploy <site>" ;; es
 : "${BOOTSERVER_HOST:?}" "${BOOTSERVER_HTTP_PORT:?}" "${INVENTORY_FILES:?config/$site.env must set INVENTORY_FILES}"
 SSH=${BOOTSERVER_SSH:-}
 [ "$cmd" != deploy ] || [ -n "$SSH" ] || die "deploy is for remote sites; $site runs locally (use up)"
+# Remote access uses the project's dedicated key (BOOTSERVER_SSH_KEY, repo-relative or absolute);
+# BatchMode makes a missing or unauthorized key fail fast instead of prompting for a password.
+SSH_OPTS=(-o BatchMode=yes)
+if [ -n "$SSH" ]; then
+  key=${BOOTSERVER_SSH_KEY:-config/ssh/pve_ed25519}
+  case $key in /*) ;; *) key=$REPO/$key ;; esac
+  [ -f "$key" ] || die "SSH key $key not found (set BOOTSERVER_SSH_KEY in config/$site.env)"
+  SSH_OPTS+=(-i "$key" -o IdentitiesOnly=yes)
+fi
+RSYNC_SSH=$(printf '%q ' ssh "${SSH_OPTS[@]}")
 
 tag=$(git -C "$REPO" rev-parse --short HEAD)
 [ -z "$(git -C "$REPO" status --porcelain -- bootserver)" ] || tag=$tag-dirty
 
 if [ "$cmd" = down ]; then
   if [ -n "$SSH" ]; then
-    run ssh "$SSH" "podman pod rm -f $POD; podman secret rm vault_password 2>/dev/null; true"
+    run ssh "${SSH_OPTS[@]}" "$SSH" "podman pod rm -f $POD; podman secret rm vault_password 2>/dev/null; true"
   else
     podman pod rm -f "$POD"; podman secret rm vault_password >/dev/null 2>&1 || true
   fi
@@ -100,19 +110,19 @@ fi
 # Remote site. deploy syncs everything; up re-syncs the manifest and image sources so the tag
 # computed here always matches what gets built there (dist/ and inventory/ are reused).
 if [ "$cmd" = deploy ]; then
-  run ssh "$SSH" mkdir -p "$REMOTE_ROOT/dist/$site" "$REMOTE_ROOT/inventory" "$REMOTE_ROOT/bootserver"
-  run rsync -aL --delete "$dist/" "$SSH:$REMOTE_ROOT/dist/$site/"
-  run rsync -aL --delete "$REPO/inventory/" "$SSH:$REMOTE_ROOT/inventory/"
+  run ssh "${SSH_OPTS[@]}" "$SSH" mkdir -p "$REMOTE_ROOT/dist/$site" "$REMOTE_ROOT/inventory" "$REMOTE_ROOT/bootserver"
+  run rsync -e "$RSYNC_SSH" -aL --delete "$dist/" "$SSH:$REMOTE_ROOT/dist/$site/"
+  run rsync -e "$RSYNC_SSH" -aL --delete "$REPO/inventory/" "$SSH:$REMOTE_ROOT/inventory/"
 else
-  run ssh "$SSH" "test -d $REMOTE_ROOT/dist/$site || { echo 'bootserver: $REMOTE_ROOT/dist/$site missing on this host: run deploy first' >&2; exit 1; }"
+  run ssh "${SSH_OPTS[@]}" "$SSH" "test -d $REMOTE_ROOT/dist/$site || { echo 'bootserver: $REMOTE_ROOT/dist/$site missing on this host: run deploy first' >&2; exit 1; }"
 fi
-run rsync -aL --delete --exclude tests --exclude '*.egg-info' --exclude __pycache__ --exclude .pytest_cache \
+run rsync -e "$RSYNC_SSH" -aL --delete --exclude tests --exclude '*.egg-info' --exclude __pycache__ --exclude .pytest_cache \
   "$REPO/bootserver/" "$SSH:$REMOTE_ROOT/bootserver/"
-run rsync -aL "$manifest" "$SSH:$REMOTE_ROOT/pod-$site.yaml"
+run rsync -e "$RSYNC_SSH" -aL "$manifest" "$SSH:$REMOTE_ROOT/pod-$site.yaml"
 # The password travels on ssh stdin only: never in argv, never written to disk.
 if [ "${DRY_RUN:-}" = 1 ]; then
-  echo "+ ssh $SSH $REMOTE_ROOT/bootserver/bootserver.sh apply $REMOTE_ROOT $tag $REMOTE_ROOT/pod-$site.yaml   < config/vault-pass (stdin)"
+  echo "+ ssh ${SSH_OPTS[*]} $SSH $REMOTE_ROOT/bootserver/bootserver.sh apply $REMOTE_ROOT $tag $REMOTE_ROOT/pod-$site.yaml   < config/vault-pass (stdin)"
 else
   # shellcheck disable=SC2029  # client-side expansion intended
-  ssh "$SSH" "$REMOTE_ROOT/bootserver/bootserver.sh" apply "$REMOTE_ROOT" "$tag" "$REMOTE_ROOT/pod-$site.yaml" < "$vault_pass"
+  ssh "${SSH_OPTS[@]}" "$SSH" "$REMOTE_ROOT/bootserver/bootserver.sh" apply "$REMOTE_ROOT" "$tag" "$REMOTE_ROOT/pod-$site.yaml" < "$vault_pass"
 fi
