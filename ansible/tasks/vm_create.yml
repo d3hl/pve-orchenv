@@ -1,5 +1,7 @@
 ---
-# Inputs: vm_name (inventory hostname). Creates the VM stopped, 6144 MB (install-time RAM).
+# Inputs: vm_name (inventory hostname). Creates the VM stopped, e2e_install_memory MB (install-time RAM).
+# Disks are SATA, not virtio-scsi: with virtio-scsi QEMU reports serial= only in VPD page 0x80, while udev's
+# ID_SERIAL/ID_SERIAL_SHORT (what the answer filters match) come from page 0x83 = 'drive-scsiN'. SATA exposes serial in both.
 # Raw API instead of community.proxmox.proxmox_kvm: we need per-disk serial=, efidisk options
 # and an ISO on ide2 in one create call.
 - name: Create VM {{ vm_name }}
@@ -18,13 +20,12 @@
       cpu: host
       cores: 2
       memory: "{{ e2e_install_memory }}"
-      scsihw: virtio-scsi-single
-      scsi0: "{{ e2e_storage }}:32,serial={{ hostvars[vm_name].root_disks.serials[0] }}"
-      scsi1: "{{ e2e_storage }}:32,serial={{ hostvars[vm_name].root_disks.serials[1] }}"
-      scsi2: "{{ e2e_storage }}:16,serial={{ hostvars[vm_name].e2e_data_serial }}"
-      scsi3: "{{ e2e_storage }}:16,serial={{ hostvars[vm_name].e2e_thin_serial }}"
+      sata0: "{{ e2e_storage }}:32,serial={{ hostvars[vm_name].root_disks.serials[0] }}"
+      sata1: "{{ e2e_storage }}:32,serial={{ hostvars[vm_name].root_disks.serials[1] }}"
+      sata2: "{{ e2e_storage }}:16,serial={{ hostvars[vm_name].e2e_data_serial }}"
+      sata3: "{{ e2e_storage }}:16,serial={{ hostvars[vm_name].e2e_thin_serial }}"
       ide2: "{{ e2e_iso_volid }},media=cdrom"
-      boot: "order=scsi0;ide2"
+      boot: "order=sata0;ide2"
       net0: "virtio={{ hostvars[vm_name].mac }},bridge={{ e2e_bridge }}"
 - name: Wait for creation of VM {{ vm_name }}
   ansible.builtin.include_tasks: pve_wait_task.yml

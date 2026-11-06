@@ -3,14 +3,14 @@
 # Usage (from the repo root): make e2e-up
 #   ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/e2e_up.yml -i inventory/e2e.yml
 # Requires the e2e boot server (bootserver/bootserver.sh up e2e) and the API token secret in the vault.
-# Memory: the hypervisor has 15.6 GB, so nodes install one at a time at 6144 MB, then run at 3072 MB.
+# Memory: the hypervisor has 15.6 GB, so nodes install one at a time at 8192 MB, then run at 3072 MB.
 - name: Create, install and start the e2e VMs
   hosts: localhost
   connection: local
   gather_facts: false
   vars_files: [e2e_vars.yml]
   vars:
-    e2e_install_memory: 6144
+    e2e_install_memory: 8192   # 6144 fails: initramfs (1.7 GB ISO-in-initrd) unpack hits "write error"
     e2e_steady_memory: 3072
     e2e_install_retries: 90   # x 20 s = 30 min per node
   tasks:

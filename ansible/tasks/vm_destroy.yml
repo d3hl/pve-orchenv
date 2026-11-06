@@ -25,7 +25,7 @@
   ansible.builtin.include_tasks: pve_api.yml
   vars:
     pve_method: DELETE
-    pve_path: "/nodes/{{ e2e_node }}/qemu/{{ vmid }}?purge=1&destroy-unreferenced-disks=1&skiplock=1"
+    pve_path: "/nodes/{{ e2e_node }}/qemu/{{ vmid }}?purge=1&destroy-unreferenced-disks=1"
 - name: Wait for destroy of VM {{ vmid }}
   ansible.builtin.include_tasks: pve_wait_task.yml
   vars:
