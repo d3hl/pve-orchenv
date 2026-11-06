@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from answer.app import create_app
-from answer.state import StateStore
+from answer.state import StateError, StateStore
 
 FIX = Path(__file__).parent / "fixtures"
 VAULT = FIX / "vault.yml"
@@ -109,9 +109,10 @@ def test_answer_malformed_400(client, body):
     assert r.status_code == 400
 
 
-def test_non_json_content_type_still_parsed_or_400(client):
+def test_text_plain_body_is_parsed_as_json(client):
+    # Behavior: the body is parsed as JSON regardless of Content-Type (force=True).
     r = client.post("/answer", data=json.dumps(payload([PVE1])), content_type="text/plain")
-    assert r.status_code in (200, 400)
+    assert r.status_code == 200
 
 
 def test_disk_mismatch_404(env, client):
@@ -226,10 +227,90 @@ def test_state_store_atomic_and_records(tmp_path):
 def test_state_corrupt_raises(tmp_path):
     p = tmp_path / "s.json"
     p.write_text("{oops")
-    with pytest.raises(ValueError):
+    with pytest.raises(StateError):
         StateStore(p).get("a")
 
 
-def test_corrupt_state_answer_404(env, client):
+def outcomes(caplog):
+    return [json.loads(r.getMessage()).get("outcome")
+            for r in caplog.records if r.name == "answer.audit" and r.getMessage().startswith("{")]
+
+
+def last(caplog):
+    return [o for o in outcomes(caplog) if o][-1]
+
+
+def test_corrupt_state_answer_404(env, client, caplog):
     (env / "state.json").write_text("{oops")
+    with caplog.at_level(logging.INFO):
+        assert post_answer(client, [PVE1]).status_code == 404
+    assert last(caplog) == "state-error"
+
+
+def test_invalid_state_record_fails_closed(env, client, caplog):
+    (env / "state.json").write_text(json.dumps({"pve1": {"state": "Installed", "last_seen": "x"}}))
+    with caplog.at_level(logging.INFO):
+        assert post_answer(client, [PVE1]).status_code == 404
+    assert last(caplog) == "state-error"
+    (env / "state.json").write_text(json.dumps({"pve1": "installed"}))
     assert post_answer(client, [PVE1]).status_code == 404
+
+
+def test_state_store_absent_vs_invalid(tmp_path):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"a": {"state": "bogus"}}))
+    assert StateStore(p).get("b")["state"] == "new"
+    with pytest.raises(StateError):
+        StateStore(p).get("a")
+
+
+def test_ambiguous_mac_404(client, caplog):
+    with caplog.at_level(logging.INFO):
+        r = post_answer(client, [PVE1, "AA:BB:CC:DD:EE:02"])
+    assert r.status_code == 404
+    rec = [json.loads(x.getMessage()) for x in caplog.records if x.name == "answer.audit"][-1]
+    assert rec["outcome"] == "ambiguous-mac" and rec["host"] == ["pve1", "pve2"]
+    assert state(client, "pve1") == "new"
+
+
+def test_deeply_nested_body_400(client):
+    r = client.post("/answer", data="[" * 200000, content_type="application/json")
+    assert r.status_code == 400
+
+
+def test_oversize_body_not_500(client):
+    r = client.post("/answer", data=b"x" * (2 * 1024 * 1024), content_type="application/json")
+    assert r.status_code in (400, 413)
+
+
+def test_unexpected_exception_internal_error(client, caplog, monkeypatch):
+    import answer.app as appmod
+
+    def boom(*a, **k):
+        raise RuntimeError("secret-ish detail")
+    monkeypatch.setattr(appmod, "render_answer", boom)
+    with caplog.at_level(logging.INFO):
+        assert post_answer(client, [PVE1]).status_code == 404
+    assert last(caplog) == "internal-error"
+    assert "secret-ish" not in "\n".join(x.getMessage() for x in caplog.records)
+    assert state(client, "pve1") == "new"
+
+
+def test_decision_outcomes_logged(env, client, caplog):
+    with caplog.at_level(logging.INFO):
+        post_answer(client, ["00:00:00:00:00:99"])
+        assert last(caplog) == "unknown-mac"
+        post_answer(client, [PVE2])
+        assert last(caplog) == "install-disabled"
+        client.post("/answer", data="{bad")
+        assert last(caplog) == "bad-request"
+        post_answer(client, [PVE1])
+        client.post("/done/pve1")
+        post_answer(client, [PVE1])
+        assert last(caplog) == "already-installed"
+        hosts = env / "inv" / "hosts.yml"
+        hosts.write_text(hosts.read_text().replace(
+            '["SERIALA1", "SERIALA2"]', '["SERIALA1", "SERIALA2", "SERIALA3"]'))
+        client.post("/reset/pve1")
+        post_answer(client, [PVE1])
+        assert last(caplog) == "disk-mismatch"

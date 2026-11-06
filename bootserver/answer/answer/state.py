@@ -12,6 +12,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class StateError(Exception):
+    """State file or record is unreadable or invalid; callers must fail closed."""
+
+
 class StateStore:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -24,9 +28,9 @@ class StateStore:
         try:
             data = json.loads(raw)
         except ValueError as e:
-            raise ValueError(f"state file {self.path} is corrupt: {e}") from None
+            raise StateError(f"state file {self.path} is corrupt: {e}") from None
         if not isinstance(data, dict):
-            raise ValueError(f"state file {self.path} is corrupt: not a mapping")
+            raise StateError(f"state file {self.path} is corrupt: not a mapping")
         return data
 
     def _save(self, data: dict) -> None:
@@ -49,9 +53,12 @@ class StateStore:
         return self._load()
 
     def get(self, host: str) -> dict:
-        rec = self._load().get(host)
-        if not isinstance(rec, dict) or rec.get("state") not in ("new", "served", "installed"):
+        data = self._load()
+        if host not in data:
             return {"state": "new", "last_seen": None}
+        rec = data[host]
+        if not isinstance(rec, dict) or rec.get("state") not in ("new", "served", "installed"):
+            raise StateError(f"invalid state record for {host!r}")
         return rec
 
     def _set(self, host: str, state: str) -> None:

@@ -13,7 +13,7 @@ from flask import Flask, Response, jsonify, request
 from .inventory import Host, Inventory, lint, load_inventory, normalize_mac
 from .render import DiskMismatch, render_answer, render_first_boot
 from .secrets import load_secrets
-from .state import StateStore
+from .state import StateError, StateStore
 
 _audit = logging.getLogger("answer.audit")
 if not _audit.handlers:
@@ -23,7 +23,7 @@ if not _audit.handlers:
     _audit.setLevel(logging.INFO)
 
 
-def _log(route: str, macs: list[str], host: str | None, outcome: str) -> None:
+def _log(route: str, macs: list[str], host: str | list[str] | None, outcome: str) -> None:
     _audit.info(json.dumps({"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                             "route": route, "macs": macs, "host": host, "outcome": outcome}))
 
@@ -62,6 +62,7 @@ def create_app(inventory_paths: list[Path], vault_path: Path, vault_password: st
     paths = [Path(p) for p in inventory_paths]
     store = StateStore(Path(state_path))
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 
     def inventory() -> Inventory | None:
         try:
@@ -75,7 +76,10 @@ def create_app(inventory_paths: list[Path], vault_path: Path, vault_password: st
 
     @app.post("/answer")
     def answer():
-        body = request.get_json(force=True, silent=True)
+        try:
+            body = request.get_json(force=True, silent=True)
+        except (ValueError, RecursionError):
+            body = None
         macs = _extract_macs(body)
         if macs is None:
             return deny("/answer", [], None, "bad-request", 400)
@@ -83,9 +87,12 @@ def create_app(inventory_paths: list[Path], vault_path: Path, vault_password: st
         if inv is None:
             return deny("/answer", macs, None, "invalid-host")
         try:
-            host = next((h for h in inv.hosts.values() if h.mac and h.mac in macs), None)
-            if host is None:
+            matches = [h for h in inv.hosts.values() if h.mac and h.mac in macs]
+            if not matches:
                 return deny("/answer", macs, None, "unknown-mac")
+            if len(matches) > 1:
+                return deny("/answer", macs, [h.name for h in matches], "ambiguous-mac")
+            host = matches[0]
             if _host_lint_errors(inv, host):
                 return deny("/answer", macs, host.name, "invalid-host")
             if not host.install:
@@ -96,10 +103,13 @@ def create_app(inventory_paths: list[Path], vault_path: Path, vault_password: st
             store.mark_served(host.name)
         except DiskMismatch:
             return deny("/answer", macs, host.name, "disk-mismatch")
+        except (StateError, OSError):
+            return deny("/answer", macs, host.name, "state-error")
         except (ValueError, KeyError, TypeError):
             return deny("/answer", macs, host.name, "invalid-host")
-        except OSError:
-            return deny("/answer", macs, host.name, "state-error")
+        except Exception as e:  # never 500 or fail open; log the type only
+            _audit.error(json.dumps({"route": "/answer", "error": type(e).__name__}))
+            return deny("/answer", macs, host.name, "internal-error")
         _log("/answer", macs, host.name, "served")
         return Response(text, mimetype="application/toml")
 
@@ -125,7 +135,7 @@ def create_app(inventory_paths: list[Path], vault_path: Path, vault_password: st
             return deny(route, [], None, "unknown-host")
         try:
             fn(host.name)
-        except (ValueError, OSError):
+        except (StateError, ValueError, OSError):
             return deny(route, [], host.name, "state-error", 500)
         _log(route, [], host.name, outcome)
         return jsonify({"host": host.name, "outcome": outcome})
@@ -145,7 +155,7 @@ def create_app(inventory_paths: list[Path], vault_path: Path, vault_password: st
             return Response("inventory unreadable\n", status=503)
         try:
             st = store.all()
-        except ValueError:
+        except StateError:
             return Response("state unreadable\n", status=503)
         out = {}
         for n, h in inv.hosts.items():
