@@ -9,3 +9,5 @@ config/*.env
 *.egg-info/
 __pycache__/
 .pytest_cache/
+config/vault-pass
+config/ssh/
