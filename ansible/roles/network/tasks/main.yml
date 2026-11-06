@@ -1,12 +1,22 @@
 ---
 # Commit-confirm apply: arm a systemd timer that restores the old config, apply, and only stop the
 # timer once the host answers again. Everything is skipped when /etc/network/interfaces is unchanged.
+- name: Validate the network inputs before changing anything
+  ansible.builtin.assert:
+    that:
+      - mgmt_ip is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$')
+      - >-
+        network.vlans | default([]) | map(attribute='id') | map('string')
+        | select('match', '^[0-9]+$') | map('int') | select('ge', 1) | select('le', 4094) | list | length
+        == network.vlans | default([]) | length
+    fail_msg: mgmt_ip must be CIDR (a.b.c.d/nn) and every network.vlans[].id an integer from 1 to 4094
+    quiet: true
+
 - name: Collect the physical NICs (bridges, bonds and tap devices share MACs, so they are left out)
   ansible.builtin.set_fact:
     network_candidates: >-
       {{ ansible_facts['interfaces']
          | reject('match', '^(lo|vmbr|bond|veth|tap|fwbr|fwpr|fwln)')
-
          | map('extract', ansible_facts)
          | selectattr('macaddress', 'defined') | list }}
 
@@ -58,12 +68,23 @@
   # In --check mode the plan task above already reports the pending change (with --diff).
   when: network_plan is changed and not ansible_check_mode
   block:
+    - name: Is a rollback timer from an interrupted run still pending?
+      ansible.builtin.systemd:
+        name: net-rollback.timer
+      register: network_old_timer
+      failed_when: false
+
     - name: Make sure no earlier rollback unit is left over
       ansible.builtin.systemd:
         name: "{{ item }}"
         state: stopped
       loop: [net-rollback.timer, net-rollback.service]
       failed_when: false  # the units normally do not exist
+
+    - name: Clear a failed transient unit (it would block the next systemd-run --unit net-rollback)
+      ansible.builtin.command: systemctl reset-failed net-rollback.service net-rollback.timer  # noqa: command-instead-of-module
+      changed_when: false
+      failed_when: false
 
     - name: Create the backup directory
       ansible.builtin.file:
@@ -73,7 +94,10 @@
         owner: root
         group: root
 
+    # A timer still pending means an earlier run was interrupted and the current file may be an
+    # unconfirmed one: keep the backup from that run (the last known good config) instead.
     - name: Back up the current interfaces file
+      when: (network_old_timer.status.ActiveState | default('inactive')) != 'active'
       ansible.builtin.copy:
         src: /etc/network/interfaces
         dest: "{{ network_rollback_dir }}/interfaces.bak"
@@ -85,7 +109,7 @@
     - name: Arm the rollback timer BEFORE touching the network
       ansible.builtin.command: >-
         systemd-run --unit net-rollback --on-active={{ network_rollback_seconds }}
-        /usr/local/sbin/net-rollback.sh
+        /usr/local/sbin/net-rollback.sh {{ network_rollback_dir }}/interfaces.bak
       changed_when: true
 
     - name: Write the new interfaces file and syntax-check it
