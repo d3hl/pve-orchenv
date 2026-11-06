@@ -46,7 +46,7 @@ if [[ "${1:-}" == "--inner" ]]; then
   # UEFI-only iPXE ISO (genfsimg wants isolinux for BIOS): FAT ESP image as El Torito EFI entry.
   mkdir -p "$WORK/iso"
   truncate -s 4M "$WORK/iso/efi.img"
-  mformat -i "$WORK/iso/efi.img" -F ::
+  mformat -i "$WORK/iso/efi.img" ::
   mmd -i "$WORK/iso/efi.img" ::/EFI ::/EFI/BOOT
   mcopy -i "$WORK/iso/efi.img" "$WORK/out/ipxe.efi" ::/EFI/BOOT/BOOTX64.EFI
   xorriso -as mkisofs -quiet -V IPXE -o "$WORK/out/ipxe.iso" \
