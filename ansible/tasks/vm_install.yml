@@ -1,6 +1,6 @@
 ---
-# Inputs: vm_name. Install one node, then shrink it to steady-state RAM (Ruling D:
-# 15.6 GB hypervisor, so installs run one at a time at 6144 MB, then 3072 MB each).
+# Inputs: vm_name. Install one node, then shrink it to steady-state RAM (Rulings D, AC:
+# 15.6 GB hypervisor, so installs run one at a time at 8192 MB, then 3072 MB each).
 - name: Reset install state of {{ vm_name }}
   ansible.builtin.uri:
     url: "{{ e2e_boot_url }}/reset/{{ vm_name }}"
