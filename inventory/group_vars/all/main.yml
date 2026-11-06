@@ -1,8 +1,7 @@
 ---
-domain: lab.internal
-gateway: 10.10.10.2
-dns: [10.10.10.2]
+# Defaults shared by every site. Site-specific values (domain, gateway, dns, cluster_name)
+# live in each inventory file's all.vars: Ansible ranks group_vars/all above inventory-file
+# group vars, so they must not be set here.
 timezone: Asia/Ho_Chi_Minh
 keyboard: en-us
 country: vn
-cluster_name: homelab

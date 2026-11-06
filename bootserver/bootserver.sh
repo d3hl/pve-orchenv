@@ -55,7 +55,7 @@ case "$cmd" in up|down|deploy) ;; *) die "usage: $0 up|down|deploy <site>" ;; es
 [ -n "$site" ] && [ -f "$REPO/config/$site.env" ] || die "no config/$site.env (usage: $0 $cmd <site>)"
 # shellcheck source=/dev/null
 . "$REPO/config/$site.env"
-: "${BOOTSERVER_HOST:?}" "${BOOTSERVER_HTTP_PORT:?}"
+: "${BOOTSERVER_HOST:?}" "${BOOTSERVER_HTTP_PORT:?}" "${INVENTORY_FILES:?config/$site.env must set INVENTORY_FILES}"
 SSH=${BOOTSERVER_SSH:-}
 [ "$cmd" != deploy ] || [ -n "$SSH" ] || die "deploy is for remote sites; $site runs locally (use up)"
 
@@ -81,9 +81,16 @@ else root=$REPO; dist_dir=$dist; inv_dir=$REPO/inventory; fi
 manifest=$REPO/cache/pod-$site.yaml
 mkdir -p "$REPO/cache"
 export IMAGE_TAG=$tag HTTP_PORT=$BOOTSERVER_HTTP_PORT BASE_URL="http://$BOOTSERVER_HOST:$BOOTSERVER_HTTP_PORT"
-export DIST_DIR=$dist_dir INVENTORY_DIR=$inv_dir
+# Each site's answer service loads only its own inventory: repo-relative inventory/x.yml -> /inventory/x.yml
+container_inv=
+IFS=: read -ra _inv <<< "$INVENTORY_FILES"
+for f in "${_inv[@]}"; do
+  case $f in inventory/*.yml) [ -f "$REPO/$f" ] || die "$f (INVENTORY_FILES) not found" ;; *) die "INVENTORY_FILES entries must be inventory/*.yml (got $f)" ;; esac
+  container_inv+=${container_inv:+:}/$f
+done
+export DIST_DIR=$dist_dir INVENTORY_DIR=$inv_dir CONTAINER_INVENTORY_FILES=$container_inv
 # shellcheck disable=SC2016  # envsubst takes a literal variable list
-envsubst '${IMAGE_TAG} ${HTTP_PORT} ${BASE_URL} ${DIST_DIR} ${INVENTORY_DIR}' < "$SELF_DIR/pod.yaml" > "$manifest"
+envsubst '${IMAGE_TAG} ${HTTP_PORT} ${BASE_URL} ${DIST_DIR} ${INVENTORY_DIR} ${CONTAINER_INVENTORY_FILES}' < "$SELF_DIR/pod.yaml" > "$manifest"
 
 if [ -z "$SSH" ]; then
   apply "$root" "$tag" "$manifest" < "$vault_pass"

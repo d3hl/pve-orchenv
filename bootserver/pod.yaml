@@ -25,7 +25,7 @@ spec:
       imagePullPolicy: Never
       securityContext: {seLinuxOptions: {type: spc_t}}
       env:
-        - {name: INVENTORY_FILES, value: /inventory/hosts.yml}
+        - {name: INVENTORY_FILES, value: "${CONTAINER_INVENTORY_FILES}"}
         - {name: VAULT_PATH, value: /inventory/group_vars/all/vault.yml}
         - {name: VAULT_PASSWORD_FILE, value: /run/secrets/vault_password/vault_password}
         - {name: STATE_PATH, value: /state/state.json}
