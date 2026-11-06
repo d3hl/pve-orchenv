@@ -63,8 +63,11 @@ tag=$(git -C "$REPO" rev-parse --short HEAD)
 [ -z "$(git -C "$REPO" status --porcelain -- bootserver)" ] || tag=$tag-dirty
 
 if [ "$cmd" = down ]; then
-  if [ -n "$SSH" ]; then run ssh "$SSH" podman pod rm -f "$POD"
-  else podman pod rm -f "$POD"; fi
+  if [ -n "$SSH" ]; then
+    run ssh "$SSH" "podman pod rm -f $POD; podman secret rm vault_password 2>/dev/null; true"
+  else
+    podman pod rm -f "$POD"; podman secret rm vault_password >/dev/null 2>&1 || true
+  fi
   exit 0
 fi
 
@@ -87,15 +90,18 @@ if [ -z "$SSH" ]; then
   exit 0
 fi
 
-# Remote site. deploy = sync files first; up = reuse what is already on the host.
+# Remote site. deploy syncs everything; up re-syncs the manifest and image sources so the tag
+# computed here always matches what gets built there (dist/ and inventory/ are reused).
 if [ "$cmd" = deploy ]; then
   run ssh "$SSH" mkdir -p "$REMOTE_ROOT/dist/$site" "$REMOTE_ROOT/inventory" "$REMOTE_ROOT/bootserver"
   run rsync -aL --delete "$dist/" "$SSH:$REMOTE_ROOT/dist/$site/"
   run rsync -aL --delete "$REPO/inventory/" "$SSH:$REMOTE_ROOT/inventory/"
-  run rsync -aL --delete --exclude tests --exclude '*.egg-info' --exclude __pycache__ --exclude .pytest_cache \
-    "$REPO/bootserver/" "$SSH:$REMOTE_ROOT/bootserver/"
-  run rsync -aL "$manifest" "$SSH:$REMOTE_ROOT/pod-$site.yaml"
+else
+  run ssh "$SSH" "test -d $REMOTE_ROOT/dist/$site || { echo 'bootserver: $REMOTE_ROOT/dist/$site missing on this host: run deploy first' >&2; exit 1; }"
 fi
+run rsync -aL --delete --exclude tests --exclude '*.egg-info' --exclude __pycache__ --exclude .pytest_cache \
+  "$REPO/bootserver/" "$SSH:$REMOTE_ROOT/bootserver/"
+run rsync -aL "$manifest" "$SSH:$REMOTE_ROOT/pod-$site.yaml"
 # The password travels on ssh stdin only: never in argv, never written to disk.
 if [ "${DRY_RUN:-}" = 1 ]; then
   echo "+ ssh $SSH $REMOTE_ROOT/bootserver/bootserver.sh apply $REMOTE_ROOT $tag $REMOTE_ROOT/pod-$site.yaml   < config/vault-pass (stdin)"

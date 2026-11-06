@@ -77,7 +77,7 @@ The PVE OVMF firmware on the test host offers no network-boot option for virtio 
 
 ## Boot server
 
-One Podman pod (`pve-orchenv-bootserver`, host networking, `bootserver/pod.yaml` rendered per site) runs: `tftp` (dnsmasq, TFTP only, udp/69, serves the site dist dir), `web` (nginx on `BOOTSERVER_HTTP_PORT`, serves dist read-only and proxies `/answer`, `/first-boot/`, `/done/`, `/reset/`, `/status` to the answer service) and `answer` (gunicorn, 1 sync worker, on 127.0.0.1:8000). The vault password is a Podman secret (created from `config/vault-pass`, never in an image, manifest file or argv); install state lives in the named volume `pve-orchenv-state`.
+One Podman pod (`pve-orchenv-bootserver`, host networking, `bootserver/pod.yaml` rendered per site) runs: `tftp` (dnsmasq, TFTP only, udp/69, serves the site dist dir), `web` (nginx on `BOOTSERVER_HTTP_PORT`, serves dist read-only and proxies `/answer`, `/first-boot/`, `/done/`, `/reset/`, `/status` to the answer service) and `answer` (gunicorn, 1 sync worker, on 127.0.0.1:8000). The vault password is a Podman secret (fed from `config/vault-pass` on stdin; never in an image, manifest file or argv; kept only in Podman's secret store while the pod exists, `down` removes it); install state lives in the named volume `pve-orchenv-state`.
 
 ```
 make bootserver-up SITE=e2e        # build images, render manifest, podman kube play --replace
@@ -86,7 +86,7 @@ make bootserver-deploy SITE=remote # remote sites: rsync dist/inventory/bootserv
 DRY_RUN=1 make bootserver-deploy SITE=remote   # print every ssh/rsync command, run nothing
 ```
 
-Without `make`, call `bootserver/bootserver.sh up|down|deploy <site>`. An empty `BOOTSERVER_SSH` runs locally; otherwise `up`/`down` act on the remote host over SSH (`up` reuses what the last `deploy` copied).
+Without `make`, call `bootserver/bootserver.sh up|down|deploy <site>`. An empty `BOOTSERVER_SSH` runs locally; otherwise `up`/`down` act on the remote host over SSH (`up` re-syncs the manifest and image sources, reuses the dist/inventory the last `deploy` copied, and fails with "run deploy first" if there is none).
 
 - The pod mounts the *resolved* `dist/<site>` build dir, so after a rebuild run `bootserver-up` (or `deploy`) again to pick it up.
 - Remote host: a Linux VM at the site (e.g. on Hyper-V) with Podman and rsync, reachable over SSH. Rootless needs `net.ipv4.ip_unprivileged_port_start <= 69` (checked, with a clear error) or run as root. Open the firewall for udp/69 plus the TFTP data ports (high UDP, or allow established/related), and tcp/`BOOTSERVER_HTTP_PORT`. It must never run on a PVE node it provisions.
