@@ -26,13 +26,14 @@ def test_boot_script_every_step_falls_through_to_local_disk():
         if ln.split()[0] in ("imgfetch", "kernel", "initrd", "boot", "chain"):
             assert ln.endswith("|| goto local"), ln
     i = lines.index(":local")
-    assert lines[-1] == "exit 0" and i < len(lines) - 1
+    # Non-zero: EDK2 UEFI treats a successful return as "boot done" and shows its menu instead of the next device.
+    assert lines[-1] == "exit 1" and i < len(lines) - 1
     assert not any(ln.split()[0] in ("shell", "prompt", "sleep") for ln in lines)
 
 
 def test_embedded_script_exits_on_failure():
     lines = render("ipxe-embed.ipxe")
-    assert lines == ["dhcp || exit 1", "chain http://10.0.0.5:8080/boot.ipxe || exit 1", "exit 0"]
+    assert lines == ["dhcp || exit 1", "chain http://10.0.0.5:8080/boot.ipxe || exit 1", "exit 1"]
 
 
 def test_gate_url_matches_the_answer_route_and_proxy():

@@ -9,4 +9,4 @@ initrd http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/initrd || goto local
 boot || goto local
 :local
 echo No install for ${netX/mac}: leaving iPXE, the firmware boots the next device (local disk)
-exit 0
+exit 1

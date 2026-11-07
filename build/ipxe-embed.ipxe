@@ -3,4 +3,4 @@
 # leave iPXE so the firmware boots its next device (the local disk). Never stop at a shell or hang.
 dhcp || exit 1
 chain http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/boot.ipxe || exit 1
-exit 0
+exit 1

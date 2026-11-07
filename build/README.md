@@ -10,7 +10,7 @@
 - Only the base image (by digest) and `proxmox-auto-install-assistant` (`PVE_AIA_VERSION`) are pinned; other Debian packages come from the rolling trixie archive.
 - `dist/<site>` is a symlink to `dist/.<site>-<UTC timestamp>/`, swapped atomically; the previous build is kept for rollback. A running boot server bind-mounts what the symlink pointed to at container start, so restart the stack after a rebuild.
 - iPXE has `dhcp` + `chain http://$BOOTSERVER_HOST:$BOOTSERVER_HTTP_PORT/boot.ipxe` embedded, so no DHCP user-class rules are needed on the router. If either fails (no lease, boot server down), iPXE exits and the firmware boots its next device.
-- `boot.ipxe` first asks the answer service `GET /boot/<mac>`. It answers 200 exactly when `/answer` would serve that MAC (known, `install: true`, state not `installed`, inventory valid). Otherwise (404, or any error) `boot.ipxe` skips the installer and exits, and the firmware boots the local disk. An unknown or installed host that is network-booted therefore never starts the installer and never hangs on a 404 answer.
+- `boot.ipxe` first asks the answer service `GET /boot/<mac>`. It answers 200 exactly when `/answer` would serve that MAC (known, `install: true`, state not `installed`, inventory valid). Otherwise (404, or any error) `boot.ipxe` skips the installer and exits with a non-zero status, so the firmware moves on to the next boot device (the local disk; a zero status would make EDK2 UEFI firmware show its boot menu instead). An unknown or installed host that is network-booted therefore never starts the installer and never hangs on a 404 answer.
 
 ## Router setup
 
@@ -121,7 +121,7 @@ SSH host keys are checked. `inventory/hosts.yml` sets `StrictHostKeyChecking=acc
 
 ### First build of a site
 
-1. Fill `inventory/hosts.yml`: per host `mac`, `mgmt_ip`, `root_disks.serials` (from `lsblk -o NAME,SERIAL` on the box), `cluster_role` (exactly one `primary`), and `install: true`. Ansible reaches each host as `root` at its `mgmt_ip` with `config/ssh/pve_ed25519` (set under `pve.vars`).
+1. Fill `inventory/hosts.yml`: per host `mac` (the MAC of the NIC that network-boots: `boot.ipxe` checks only that NIC), `mgmt_ip`, `root_disks.serials` (from `lsblk -o NAME,SERIAL` on the box), `cluster_role` (exactly one `primary`), and `install: true`. Ansible reaches each host as `root` at its `mgmt_ip` with `config/ssh/pve_ed25519` (set under `pve.vars`).
 2. `make test && make check` (lint the inventory, render and validate every answer).
 3. `make build SITE=remote` (downloads and verifies the ISO, builds the iPXE binaries and `ipxe.iso`).
 4. Deploy the boot server to the site's boot VM: `bootserver/bootserver.sh deploy remote` (rsyncs `dist/`, the inventory and the answer service to `BOOTSERVER_SSH`, `root@10.10.10.21`, and starts the pod there). Without `make`, that script is the whole interface; `DRY_RUN=1` prints what it would do.
