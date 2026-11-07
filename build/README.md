@@ -9,7 +9,8 @@
 - Nested e2e VMs boot `ipxe.iso` (EFI) because of the OVMF/virtio PXE quirk on the test host; real hardware uses TFTP `ipxe.efi`/`undionly.kpxe`.
 - Only the base image (by digest) and `proxmox-auto-install-assistant` (`PVE_AIA_VERSION`) are pinned; other Debian packages come from the rolling trixie archive.
 - `dist/<site>` is a symlink to `dist/.<site>-<UTC timestamp>/`, swapped atomically; the previous build is kept for rollback. A running boot server bind-mounts what the symlink pointed to at container start, so restart the stack after a rebuild.
-- iPXE has `dhcp` + `chain http://$BOOTSERVER_HOST:$BOOTSERVER_HTTP_PORT/boot.ipxe` embedded, so no DHCP user-class rules are needed on the router.
+- iPXE has `dhcp` + `chain http://$BOOTSERVER_HOST:$BOOTSERVER_HTTP_PORT/boot.ipxe` embedded, so no DHCP user-class rules are needed on the router. If either fails (no lease, boot server down), iPXE exits and the firmware boots its next device.
+- `boot.ipxe` first asks the answer service `GET /boot/<mac>`. It answers 200 exactly when `/answer` would serve that MAC (known, `install: true`, state not `installed`, inventory valid). Otherwise (404, or any error) `boot.ipxe` skips the installer and exits, and the firmware boots the local disk. An unknown or installed host that is network-booted therefore never starts the installer and never hangs on a 404 answer.
 
 ## Router setup
 
@@ -77,26 +78,29 @@ The PVE OVMF firmware on the test host offers no network-boot option for virtio 
 
 ## Boot server
 
-One Podman pod (`pve-orchenv-bootserver`, host networking, `bootserver/pod.yaml` rendered per site) runs: `tftp` (dnsmasq, TFTP only, udp/69, serves the site dist dir), `web` (nginx on `BOOTSERVER_HTTP_PORT`, serves dist read-only and proxies `/answer`, `/first-boot/`, `/done/`, `/reset/`, `/status` to the answer service) and `answer` (gunicorn, 1 sync worker, on 127.0.0.1:8000). The vault password is a Podman secret (fed from `config/vault-pass` on stdin; never in an image, manifest file or argv; kept only in Podman's secret store while the pod exists, `down` removes it); install state lives in the named volume `pve-orchenv-state`.
+One Podman pod (`pve-orchenv-bootserver`, host networking, `bootserver/pod.yaml` rendered per site) runs: `tftp` (dnsmasq, TFTP only, udp/69, serves the site dist dir), `web` (nginx on `BOOTSERVER_HTTP_PORT`, serves dist read-only and proxies `/answer`, `/boot/`, `/first-boot/`, `/done/`, `/reset/`, `/status` to the answer service) and `answer` (gunicorn, 1 sync worker, on 127.0.0.1:8000). Install state lives in the named volume `pve-orchenv-state`.
+
+Secrets on the boot server: only a minimal secrets file with the root password hash and the root SSH public keys. `bootserver.sh` renders it on the workstation from the vault (`answer.cli export-secrets`, a 0600 temp file under `cache/`, deleted when the script exits, never printed) and feeds it on stdin (ssh stdin for a remote site) into the Podman secret `answer_secrets`. It is never in an image, manifest file or argv. Podman's file driver keeps it on the boot server's disk (root/user-only) until `down` removes it. The vault (`inventory/group_vars/all/vault.yml`) and `config/vault-pass` never leave the workstation: `deploy` rsyncs only the site's inventory files and `group_vars/all/main.yml` and deletes anything else under the remote `inventory/` (including a `vault.yml` an earlier version shipped). The same path is used for local and remote sites.
 
 ```
 make bootserver-up SITE=e2e        # build images, render manifest, podman kube play --replace
 make bootserver-down SITE=e2e      # remove the pod (state volume is kept)
 make bootserver-deploy SITE=remote # remote sites: rsync dist/inventory/bootserver to $BOOTSERVER_SSH:/opt/pve-orchenv, then (re)start there
-DRY_RUN=1 make bootserver-deploy SITE=remote   # print every ssh/rsync command, run nothing
+DRY_RUN=1 make bootserver-deploy SITE=remote   # print every ssh/rsync command, run nothing (the vault is not decrypted)
 ```
 
 Without `make`, call `bootserver/bootserver.sh up|down|deploy <site>`. An empty `BOOTSERVER_SSH` runs locally; otherwise `up`/`down` act on the remote host over SSH (`up` re-syncs the manifest and image sources, reuses the dist/inventory the last `deploy` copied, and fails with "run deploy first" if there is none).
 
 - The pod mounts the *resolved* `dist/<site>` build dir, so after a rebuild run `bootserver-up` (or `deploy`) again to pick it up.
 - Remote host: a Linux VM at the site (e.g. on Hyper-V) with Podman and rsync, reachable over SSH. Rootless needs `net.ipv4.ip_unprivileged_port_start <= 69` (checked, with a clear error) or run as root. Open the firewall for udp/69 plus the TFTP data ports (high UDP, or allow established/related), and tcp/`BOOTSERVER_HTTP_PORT`. It must never run on a PVE node it provisions.
-- `/reset/<host>` and `/status` are reachable by anything that can reach the HTTP port; keep the boot network trusted.
+- `/reset/<host>` and `/status` are reachable by anything that can reach the HTTP port; keep the boot network trusted. A reset alone never reinstalls a host: it also needs `install: true` and a network boot (see the runbook).
+- `up`/`deploy` need `.venv` (to decrypt the vault on the workstation) and `config/vault-pass`.
 
 ## Secrets
 
-- `config/vault-pass`: Ansible Vault password (mode 0600, gitignored). Used by `make check`, Ansible and the answer service.
+- `config/vault-pass`: Ansible Vault password (mode 0600, gitignored). Used by `make check`, Ansible and `bootserver.sh` on the workstation only; it is never sent to the boot server.
 - `config/ssh/pve_ed25519` (+ `.pub`): dedicated root SSH keypair for the PVE hosts (gitignored).
-- `inventory/group_vars/all/vault.yml`: committed, Vault-encrypted. Holds `vault_root_password`, `vault_root_password_hash` (`openssl passwd -6`) and `vault_root_ssh_keys` (the `.pub` above). Answers use only the hash and the keys.
+- `inventory/group_vars/all/vault.yml`: committed, Vault-encrypted. Holds `vault_root_password`, `vault_root_password_hash` (`openssl passwd -6`) and `vault_root_ssh_keys` (the `.pub` above). Answers use only the hash and the keys, and only those two values reach the boot server (see Boot server).
 
 ```
 ansible-vault view inventory/group_vars/all/vault.yml --vault-password-file config/vault-pass
@@ -109,28 +113,37 @@ When changing the root password, update `vault_root_password` and regenerate `va
 
 Sites: `e2e` (nested test cluster) and `remote` (the real site, boot server at 10.10.10.21). Config lives in `config/<site>.env`; the inventory is `inventory/<site>.yml` (`inventory/hosts.yml` for `remote`). Run everything from the repo root with `ANSIBLE_CONFIG=ansible/ansible.cfg` and `.venv/bin/`.
 
+Boot order (spec §1): every host's firmware boots **disk first, network second**, permanently. An install or reinstall happens only when the operator picks a **one-time** network boot: the firmware boot menu (F11/F12 and similar) or the BMC, e.g. `ipmitool -I lanplus -H <bmc> -U <user> -E chassis bootdev pxe options=efiboot` (one-shot unless `persistent` is given; drop `options=efiboot` for legacy BIOS), then power-cycle. Never set network first: the installer reboots at the end, and with network first the host would boot the installer again before its first disk boot has reported `done`.
+
+Two locks keep an installed host from being wiped: its state `installed` (answer service: `/boot` and `/answer` return 404, so a network boot falls through to the disk) and `install: false` in the inventory. The state alone is not enough: `POST /reset/<host>` (from `rebuild.yml`, or from anyone on the boot network, since it is unauthenticated), a lost `pve-orchenv-state` volume or a newly built boot server VM all bring it back to `new`. With `install: true` still set, the next network boot of that host would then reinstall it and destroy every guest on its local storage. So set `install: false` again as soon as a host is installed, and keep it there except during a planned (re)install.
+
+SSH host keys are checked. `inventory/hosts.yml` sets `StrictHostKeyChecking=accept-new`: the first connection to a freshly installed node records its key in `~/.ssh/known_hosts`, and a changed key is refused. `rebuild.yml` forgets a rebuilt node's old key; if a node was reinstalled any other way, run `ssh-keygen -R <name>` and `ssh-keygen -R <ip>` first. (The e2e inventory uses its own throwaway `cache/e2e/known_hosts`.)
+
 ### First build of a site
 
-1. Fill `inventory/hosts.yml`: per host `mac`, `mgmt_ip`, `root_disks.serials` (from `lsblk -o NAME,SERIAL` on the box), `cluster_role` (exactly one `primary`), and `install: true`.
+1. Fill `inventory/hosts.yml`: per host `mac`, `mgmt_ip`, `root_disks.serials` (from `lsblk -o NAME,SERIAL` on the box), `cluster_role` (exactly one `primary`), and `install: true`. Ansible reaches each host as `root` at its `mgmt_ip` with `config/ssh/pve_ed25519` (set under `pve.vars`).
 2. `make test && make check` (lint the inventory, render and validate every answer).
 3. `make build SITE=remote` (downloads and verifies the ISO, builds the iPXE binaries and `ipxe.iso`).
 4. Deploy the boot server to the site's boot VM: `bootserver/bootserver.sh deploy remote` (rsyncs `dist/`, the inventory and the answer service to `BOOTSERVER_SSH`, `root@10.10.10.21`, and starts the pod there). Without `make`, that script is the whole interface; `DRY_RUN=1` prints what it would do.
 5. Router (DHCP): `next-server` (TFTP server) `10.10.10.21`; boot file for UEFI clients `ipxe.efi`, for BIOS clients `undionly.kpxe`. Nothing else is needed on the router.
-6. Set the machines to boot from the network first (then disk), power them on. Each one fetches its answer by MAC, installs, and reports `done`. Check progress with `curl http://10.10.10.21:8080/status` until every host is `installed`.
-7. Configure: `ansible-playbook ansible/site.yml -i inventory/hosts.yml` (base, network, cluster, storage, access). A second run must change nothing.
+6. Leave each machine's firmware boot order at disk first, network second. Start each install with a one-time network boot (boot menu, or `ipmitool ... chassis bootdev pxe` then a power cycle; see above). Each host fetches its answer by MAC, installs, reboots from its disk and reports `done`. Check progress with `curl http://10.10.10.21:8080/status` until every host is `installed`.
+7. Set `install: false` for every installed host in `inventory/hosts.yml` and redeploy (`bootserver/bootserver.sh deploy remote`), so a later reset cannot re-arm an install.
+8. Configure: `ansible-playbook ansible/site.yml -i inventory/hosts.yml` (base, network, cluster, storage, access). A second run must change nothing.
 
 ### Adding a host
 
-Add it to `inventory/hosts.yml` (`install: true`, `cluster_role: member`), then `make test && make check`, `bootserver/bootserver.sh deploy remote` to ship the new inventory to the answer service (no new build is needed, the build does not embed the inventory), PXE-boot the box, and run `ansible-playbook ansible/site.yml -i inventory/hosts.yml --limit <name>`. The cluster role joins it to the running cluster.
+Add it to `inventory/hosts.yml` (`install: true`, `cluster_role: member`), then `make test && make check`, `bootserver/bootserver.sh deploy remote` to ship the new inventory to the answer service (no new build is needed, the build does not embed the inventory), give the box a one-time network boot, and run `ansible-playbook ansible/site.yml -i inventory/hosts.yml --limit <name>`. The cluster role joins it to the running cluster. Then set `install: false` for it and redeploy.
 
 ### Rebuilding a host
 
-Use this when a node's disks are lost or you want a clean install. The cluster keeps running on the other nodes (one of them must be quorate).
+Use this when a node's disks are lost or you want a clean install. The cluster keeps running on the other nodes (one of them must be quorate, and every other node must be reachable).
 
-1. `ansible-playbook ansible/rebuild.yml -i inventory/hosts.yml -e host=<name> -e confirm=<name>` (the explicit `confirm` is required; without it nothing is changed) removes the node from the cluster (`pvecm delnode`, `/etc/pve/nodes/<name>`), forgets its SSH host keys on your machine and on the remaining nodes, and resets its install state in the answer service (`POST /reset/<name>`).
-2. Make sure `install: true` is set for `<name>` in the inventory; if you changed it, redeploy with `bootserver/bootserver.sh deploy remote`.
-3. PXE-boot the machine (a second boot without step 1 gets 404 because the state is `installed`; the installer stops and the disks are untouched).
+0. Migrate or remove every VM and container on the node, then power it off and keep it off. `rebuild.yml` refuses (and changes nothing) while `/etc/pve/nodes/<name>` still holds `qemu-server/*.conf` or `lxc/*.conf` (removing the node would delete those definitions cluster-wide) or while the node is online in the cluster. For a dead node, move its `.conf` files into another node's directory under `/etc/pve/nodes/` (the standard PVE recovery step).
+1. `ansible-playbook ansible/rebuild.yml -i inventory/hosts.yml -e host=<name> -e confirm=<name>` (the explicit `confirm` is required; without it nothing is changed) removes the node from the cluster (`pvecm delnode`, `/etc/pve/nodes/<name>`), forgets its SSH host keys on your machine and on the remaining nodes, and resets its install state in the answer service (`POST /reset/<name>`). If any cluster-side step fails or a node is unreachable, the run stops before the reset; fix the cause and run it again (run it without `--tags`; the reset needs the cluster side in the same run).
+2. Set `install: true` for `<name>` in the inventory and redeploy with `bootserver/bootserver.sh deploy remote`.
+3. Give the machine a one-time network boot (the boot order stays disk first). Without step 1 the state is still `installed`: `boot.ipxe` gets 404 from `/boot/<mac>`, skips the installer and the firmware boots the disk, untouched.
 4. `ansible-playbook ansible/site.yml -i inventory/hosts.yml --limit <name>` reconfigures it and joins it to the same cluster. The other nodes are probed, so they must be reachable.
+5. Set `install: false` for `<name>` again and redeploy.
 
 The primary can be rebuilt the same way: `cluster_role: primary` only decides who creates a cluster that does not exist yet; with a quorate cluster present the rebuilt primary joins it as a member.
 
