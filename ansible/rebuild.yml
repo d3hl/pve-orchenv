@@ -5,6 +5,8 @@
 # confirm must equal host: the playbook removes the node from the cluster, so it refuses to run without it.
 # The operator then PXE-boots the box and runs site.yml --limit <name>. For the e2e VMs, destroying and
 # recreating the VM is ansible/e2e_reinstall.yml's job, not this playbook's.
+# Refuses (nothing changed) while the node is online in the cluster or still holds guest configs.
+# Any failure on the cluster side stops the run before the install state is reset (POST /reset).
 - name: Check the rebuild request
   hosts: localhost
   connection: local
@@ -26,6 +28,7 @@
         quiet: true
 
     - name: Read the boot server address of this site
+      when: rebuild_boot_url is not defined
       ansible.builtin.set_fact:
         rebuild_boot_url: >-
           http://{{ lookup('ansible.builtin.ini', 'BOOTSERVER_HOST type=properties file=' ~ rebuild_env_file) }}:{{
@@ -33,13 +36,18 @@
       vars:
         rebuild_env_file: "{{ playbook_dir }}/../config/{{ site }}.env"
 
-# The target is skipped everywhere below: it is the node being replaced and may already be down.
+# The target is skipped everywhere below: it is the node being replaced and must already be down.
+# any_errors_fatal: a failure (or an unreachable node) anywhere ends the whole run, so the operator play
+# and its POST /reset are never reached after a failed or partial cluster removal.
 - name: Cluster side
   hosts: pve
   gather_facts: false
+  any_errors_fatal: true
   tags: [cluster]
   vars:
     rebuild_ip: "{{ hostvars[host].mgmt_ip | split('/') | first }}"
+    rebuild_pve_dir: /etc/pve   # pmxcfs mount; overridden only by the localhost test (test_rebuild_gate.py)
+    rebuild_node_dir: "{{ rebuild_pve_dir }}/nodes/{{ host }}"
   tasks:
     - name: Ask each surviving node for its cluster state
       ansible.builtin.command: pvecm status
@@ -64,6 +72,48 @@
           Nothing was changed. Bring a quorate node up first.
         quiet: true
 
+    # /etc/pve/nodes/<host> holds the node's guest definitions; removing it below deletes them
+    # cluster-wide. Same rule as join.yml's refusal to join a node that has guests.
+    - name: List guest configs the node still holds
+      ansible.builtin.find:
+        paths: ["{{ rebuild_node_dir }}/qemu-server", "{{ rebuild_node_dir }}/lxc"]
+        patterns: "*.conf"
+      register: rebuild_guests
+      when: inventory_hostname == rebuild_survivor
+
+    - name: Refuse to remove a node that has guests
+      ansible.builtin.assert:
+        that: rebuild_guests.matched == 0
+        fail_msg: >-
+          {{ host }} still holds guests ({{ rebuild_guests.files | map(attribute='path') | map('basename') | join(', ') }}
+          under {{ rebuild_node_dir }}). Removing the node deletes these definitions cluster-wide and orphans
+          their disks. Migrate them to another node first (qm migrate / pct migrate while {{ host }} runs; for a
+          dead node, move the .conf files into another node's directory under {{ rebuild_pve_dir }}/nodes/),
+          or remove them. Nothing was changed.
+        quiet: true
+      when: inventory_hostname == rebuild_survivor
+
+    # pmxcfs's .members lists every cluster node with online 1/0 as seen by corosync.
+    - name: Read the cluster membership
+      ansible.builtin.slurp:
+        src: "{{ rebuild_pve_dir }}/.members"
+      register: rebuild_members
+      when: inventory_hostname == rebuild_survivor
+
+    - name: Refuse to remove a node that is still online in the cluster
+      ansible.builtin.assert:
+        that: rebuild_online | int == 0
+        fail_msg: >-
+          {{ host }} is online in the cluster. pvecm delnode must only run against a powered-off node:
+          shut {{ host }} down (and keep it off until it is PXE-booted for the reinstall), then run this again.
+          Nothing was changed.
+        quiet: true
+      vars:
+        rebuild_online: >-
+          {{ ((((rebuild_members.content | b64decode | from_json).nodelist | default({}))[host]
+              | default({})).online | default(0)) }}
+      when: inventory_hostname == rebuild_survivor
+
     - name: Remove the node from the cluster (an absent node is fine)
       ansible.builtin.command: "pvecm delnode {{ host | quote }}"
       register: rebuild_delnode
@@ -71,9 +121,9 @@
       failed_when: rebuild_delnode.rc != 0 and rebuild_delnode.stderr is not search('not a known host|not found|does not exist|unknown node', ignorecase=true)
       when: inventory_hostname == rebuild_survivor
 
-    - name: Remove the node's leftover config from the shared /etc/pve
+    - name: Remove the node's leftover config from the shared /etc/pve (no guests, checked above)
       ansible.builtin.file:
-        path: "/etc/pve/nodes/{{ host }}"
+        path: "{{ rebuild_node_dir }}"
         state: absent
       when: inventory_hostname == rebuild_survivor
 
@@ -82,7 +132,7 @@
       ansible.builtin.shell: |
         set -o pipefail
         removed=0
-        for f in /root/.ssh/known_hosts /etc/pve/priv/known_hosts; do
+        for f in /root/.ssh/known_hosts {{ (rebuild_pve_dir ~ '/priv/known_hosts') | quote }}; do
           [ -f "$f" ] || continue
           for n in {{ host | quote }} {{ rebuild_ip | quote }}; do
             if ssh-keygen -F "$n" -f "$f" >/dev/null 2>&1; then
@@ -103,6 +153,11 @@
       changed_when: rebuild_keys.stdout | trim | int > 0
       when: inventory_hostname != host
 
+    - name: Record that the cluster side finished on this node
+      ansible.builtin.set_fact:
+        rebuild_cluster_done: true
+      when: inventory_hostname != host
+
 - name: Operator side
   hosts: localhost
   connection: local
@@ -112,6 +167,19 @@
     rebuild_file: "{{ hostvars[host].operator_known_hosts | default('~/.ssh/known_hosts') }}"
     rebuild_ip: "{{ hostvars[host].mgmt_ip | split('/') | first }}"
   tasks:
+    # Second line of defence behind any_errors_fatal: reset only after every surviving node finished the
+    # cluster side in this run and the survivor's delnode succeeded.
+    - name: The cluster side must have finished on every surviving node
+      ansible.builtin.assert:
+        that:
+          - groups['pve'] | difference([host]) | map('extract', hostvars, 'rebuild_cluster_done') | select('defined') | list | length
+            == groups['pve'] | difference([host]) | length
+          - hostvars[hostvars[groups['pve'] | difference([host]) | first].rebuild_survivor].rebuild_delnode is succeeded
+        fail_msg: >-
+          The cluster side did not finish on every surviving node (failed, unreachable, or skipped by --tags),
+          so the install state of {{ host }} is NOT reset. Fix the cause and run rebuild.yml again without tag filters.
+        quiet: true
+
     - name: Check for the operator's known_hosts
       ansible.builtin.stat:
         path: "{{ rebuild_file }}"
@@ -140,5 +208,6 @@
     - name: Next steps
       ansible.builtin.debug:
         msg: >-
-          Set `install: true` for `{{ host }}`, restart or reload the answer service, PXE-boot the host,
-          then run `site.yml --limit {{ host }}`.
+          Set `install: true` for `{{ host }}`, redeploy the boot server if you changed the inventory,
+          PXE-boot the host once (one-time network boot), then run `site.yml --limit {{ host }}` and set
+          `install: false` again.

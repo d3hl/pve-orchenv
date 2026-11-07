@@ -9,6 +9,37 @@
       ansible.builtin.include_tasks: tasks/cluster_identity.yml
       vars: {identity_label: "before-{{ host }}"}
 
+# rebuild.yml refuses a node that is still online in the cluster, as on real hardware: power it off first.
+- name: Power the node off
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [e2e_vars.yml]
+  tasks:
+    - name: Preflight
+      ansible.builtin.include_tasks: tasks/preflight.yml
+
+    - name: Shut the VM down
+      ansible.builtin.include_tasks: tasks/vm_power.yml
+      vars:
+        vmid: "{{ hostvars[host].vmid | int }}"
+        power_action: shutdown
+
+- name: Wait until the cluster sees the node offline
+  hosts: pve
+  gather_facts: false
+  tasks:
+    - name: Poll the cluster membership on another node
+      ansible.builtin.command: cat /etc/pve/.members
+      register: e2e_members
+      changed_when: false
+      until: >-
+        e2e_members.rc == 0 and
+        ((((e2e_members.stdout | from_json).nodelist | default({}))[host] | default({})).online | default(0) | int) == 0
+      retries: 24
+      delay: 5
+      when: inventory_hostname == groups['pve'] | difference([host]) | first
+
 - name: Prepare the cluster and boot server
   ansible.builtin.import_playbook: rebuild.yml
   vars: {confirm: "{{ host }}"}
