@@ -36,6 +36,19 @@ def _render(args) -> int:
     return 0
 
 
+def _export_secrets(args) -> int:
+    """Write only what the boot server needs (root password hash + SSH public keys), mode 0600."""
+    from .secrets import load_secrets, write_secrets_file
+
+    try:
+        password = args.vault_password_file.read_text().rstrip("\n")
+        write_secrets_file(args.out, load_secrets(args.vault, password))
+    except (ValueError, OSError) as e:
+        print(f"export-secrets: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="answer")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -50,6 +63,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--base-url", default="http://bootserver.invalid:8080",
                    help="answer service base URL used for first-boot URLs")
     p.set_defaults(func=_render)
+    p = sub.add_parser("export-secrets",
+                       help="write the boot server's minimal secrets file (hash + public keys) from the vault")
+    p.add_argument("--vault", type=Path, required=True)
+    p.add_argument("--vault-password-file", type=Path, required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.set_defaults(func=_export_secrets)
     args = ap.parse_args(argv)
     return args.func(args)
 

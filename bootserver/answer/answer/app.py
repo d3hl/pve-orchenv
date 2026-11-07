@@ -12,7 +12,7 @@ from flask import Flask, Response, jsonify, request
 
 from .inventory import Host, Inventory, lint, load_inventory, normalize_mac
 from .render import DiskMismatch, render_answer, render_first_boot
-from .secrets import load_secrets
+from .secrets import load_secrets_file
 from .state import StateError, StateStore
 
 _audit = logging.getLogger("answer.audit")
@@ -53,12 +53,10 @@ def _host_lint_errors(inv: Inventory, host: Host) -> list[str]:
     return out
 
 
-def create_app(inventory_paths: list[Path], vault_path: Path, vault_password: str,
+def create_app(inventory_paths: list[Path], secrets_path: Path,
                state_path: Path, base_url: str) -> Flask:
-    try:
-        secrets = load_secrets(Path(vault_path), vault_password)
-    except OSError as e:
-        raise ValueError(f"vault: cannot read {vault_path}: {e.strerror}") from None
+    # Only the minimal secrets file (hash + public keys); the vault never reaches the boot server.
+    secrets = load_secrets_file(Path(secrets_path))
     paths = [Path(p) for p in inventory_paths]
     store = StateStore(Path(state_path))
     app = Flask(__name__)

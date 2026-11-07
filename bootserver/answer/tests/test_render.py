@@ -255,3 +255,48 @@ def test_eight_char_second_serial_ok(inv):
     h = host(inv)
     h.root_disks.serials = ["ABCD", "ABCDEFGH"]
     assert select_disks(h, None)["filter"]["ID_SERIAL"] == "*_ABCDEFGH"
+
+
+# --- export-secrets: the boot server's minimal secrets file (Ruling AP) ---------
+
+def _export(tmp_path, password="test", out=None):
+    pw = tmp_path / "pw"
+    pw.write_text(password + "\n")
+    out = out or tmp_path / "answer-secrets.yml"
+    r = subprocess.run(
+        [sys.executable, "-m", "answer.cli", "export-secrets", "--vault", str(VAULT),
+         "--vault-password-file", str(pw), "--out", str(out)],
+        cwd=ROOT, capture_output=True, text=True)
+    return r, out
+
+
+def test_export_secrets_minimal_0600(tmp_path):
+    import stat
+
+    import yaml
+
+    from answer.secrets import load_secrets_file
+    r, out = _export(tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "" and r.stderr == ""          # nothing secret is printed
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    data = yaml.safe_load(out.read_text())
+    assert set(data) == {"root_password_hash", "root_ssh_keys"}
+    assert load_secrets_file(out) == SECRETS
+    assert "$ANSIBLE_VAULT" not in out.read_text()
+
+
+def test_export_secrets_tightens_existing_file(tmp_path):
+    import stat
+    out = tmp_path / "s.yml"
+    out.write_text("old")
+    out.chmod(0o644)
+    r, _ = _export(tmp_path, out=out)
+    assert r.returncode == 0, r.stderr
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+def test_export_secrets_wrong_password(tmp_path):
+    r, out = _export(tmp_path, password="nope")
+    assert r.returncode == 1 and "vault:" in r.stderr
+    assert not out.exists()

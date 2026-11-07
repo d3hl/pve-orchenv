@@ -7,8 +7,8 @@ from .app import create_app
 
 def _make():
     inv = [Path(p) for p in os.environ["INVENTORY_FILES"].split(":") if p]
-    password = Path(os.environ.get("VAULT_PASSWORD_FILE", "/run/secrets/vault_password")).read_text().rstrip("\n")
-    return create_app(inv, Path(os.environ["VAULT_PATH"]), password,
+    secrets = Path(os.environ.get("SECRETS_FILE", "/run/secrets/answer_secrets/answer_secrets"))
+    return create_app(inv, secrets,
                       Path(os.environ.get("STATE_PATH", "/state/state.json")), os.environ["BASE_URL"])
 
 

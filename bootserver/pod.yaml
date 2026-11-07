@@ -26,14 +26,15 @@ spec:
       securityContext: {seLinuxOptions: {type: spc_t}}
       env:
         - {name: INVENTORY_FILES, value: "${CONTAINER_INVENTORY_FILES}"}
-        - {name: VAULT_PATH, value: /inventory/group_vars/all/vault.yml}
-        - {name: VAULT_PASSWORD_FILE, value: /run/secrets/vault_password/vault_password}
+        # Minimal secrets (root password hash + SSH public keys) rendered on the workstation by
+        # bootserver.sh; the vault and its password never reach the boot server.
+        - {name: SECRETS_FILE, value: /run/secrets/answer_secrets/answer_secrets}
         - {name: STATE_PATH, value: /state/state.json}
         - {name: BASE_URL, value: "${BASE_URL}"}
       volumeMounts:
         - {name: inventory, mountPath: /inventory, readOnly: true}
         - {name: state, mountPath: /state}
-        - {name: vault-password, mountPath: /run/secrets/vault_password, readOnly: true}
+        - {name: answer-secrets, mountPath: /run/secrets/answer_secrets, readOnly: true}
   volumes:
     - name: dist
       hostPath: {path: "${DIST_DIR}", type: Directory}
@@ -41,5 +42,5 @@ spec:
       hostPath: {path: "${INVENTORY_DIR}", type: Directory}
     - name: state
       persistentVolumeClaim: {claimName: pve-orchenv-state}
-    - name: vault-password
-      secret: {secretName: vault_password}
+    - name: answer-secrets
+      secret: {secretName: answer_secrets}

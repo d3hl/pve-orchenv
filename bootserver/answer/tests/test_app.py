@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from answer.app import create_app
+from answer.secrets import load_secrets, write_secrets_file
 from answer.state import StateError, StateStore
 
 FIX = Path(__file__).parent / "fixtures"
@@ -33,8 +34,11 @@ def env(tmp_path):
     return tmp_path
 
 
-def make_app(env, password="test"):
-    return create_app([env / "inv" / "hosts.yml"], VAULT, password, env / "state.json", BASE)
+def make_app(env):
+    secrets = env / "answer-secrets.yml"
+    if not secrets.exists():
+        write_secrets_file(secrets, load_secrets(VAULT, "test"))
+    return create_app([env / "inv" / "hosts.yml"], secrets, env / "state.json", BASE)
 
 
 @pytest.fixture
@@ -186,14 +190,30 @@ def test_unknown_first_boot_404(client):
     assert client.get("/first-boot/%2e%2e").status_code == 404
 
 
-def test_bad_vault_password_fails_startup(env):
-    with pytest.raises(ValueError):
-        make_app(env, password="wrong")
+def test_missing_secrets_file_fails_startup(env):
+    with pytest.raises(ValueError, match="^secrets: "):
+        create_app([env / "inv" / "hosts.yml"], env / "nope.yml", env / "s.json", BASE)
 
 
-def test_missing_vault_fails_startup(env):
-    with pytest.raises(ValueError):
-        create_app([env / "inv" / "hosts.yml"], env / "nope.yml", "test", env / "s.json", BASE)
+def test_vault_is_refused_as_secrets_file(env):
+    # The encrypted vault is not the minimal secrets file: startup fails, nothing is decrypted.
+    with pytest.raises(ValueError, match="^secrets: "):
+        create_app([env / "inv" / "hosts.yml"], VAULT, env / "s.json", BASE)
+
+
+@pytest.mark.parametrize("text", [
+    "root_password_hash: '$6$x$y'\n",                                    # no keys
+    "root_ssh_keys: ['ssh-ed25519 AAAA k']\n",                           # no hash
+    "root_password_hash: plain\nroot_ssh_keys: ['ssh-ed25519 AAAA k']\n",  # not a hash
+    "root_password_hash: '$6$x$y'\nroot_ssh_keys: ['k']\nvault_root_password: x\n",  # extra key
+    "- a\n",
+    "{",
+])
+def test_bad_secrets_file_fails_startup(env, text):
+    p = env / "bad.yml"
+    p.write_text(text)
+    with pytest.raises(ValueError, match="^secrets: "):
+        create_app([env / "inv" / "hosts.yml"], p, env / "s.json", BASE)
 
 
 def test_first_boot_script(client):
@@ -314,3 +334,4 @@ def test_decision_outcomes_logged(env, client, caplog):
         client.post("/reset/pve1")
         post_answer(client, [PVE1])
         assert last(caplog) == "disk-mismatch"
+
