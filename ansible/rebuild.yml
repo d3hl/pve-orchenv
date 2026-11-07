@@ -129,22 +129,34 @@
 
     # A reinstalled host has new SSH host keys. pmxcfs holds the cluster-wide /etc/pve/priv/known_hosts.
     - name: Forget the node's old SSH host keys on the surviving nodes
+      # ssh-keygen -R hard-links a backup, which pmxcfs (/etc/pve) refuses: edit a copy on local disk, then
+      # write it back in place.
       ansible.builtin.shell: |
         set -o pipefail
         removed=0
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
         for f in /root/.ssh/known_hosts {{ (rebuild_pve_dir ~ '/priv/known_hosts') | quote }}; do
           [ -f "$f" ] || continue
+          cp "$f" "$work/kh"
+          found=0
+          for n in {{ host | quote }} {{ rebuild_ip | quote }}; do
+            if ssh-keygen -F "$n" -f "$work/kh" >/dev/null 2>&1; then
+              ssh-keygen -f "$work/kh" -R "$n" >/dev/null 2>&1 || { echo "ssh-keygen -R $n failed on a copy of $f" >&2; exit 1; }
+              found=$((found + 1))
+            fi
+          done
+          if [ "$found" -gt 0 ]; then
+            cat "$work/kh" > "$f" || { echo "could not write $f" >&2; exit 1; }
+            removed=$((removed + found))
+          fi
           for n in {{ host | quote }} {{ rebuild_ip | quote }}; do
             if ssh-keygen -F "$n" -f "$f" >/dev/null 2>&1; then
-              ssh-keygen -f "$f" -R "$n" >/dev/null || { echo "ssh-keygen -R $n failed on $f" >&2; exit 1; }
-              removed=$((removed + 1))
-            fi
-            if ssh-keygen -F "$n" -f "$f" >/dev/null 2>&1; then
-              echo "a key for $n remains in $f after ssh-keygen -R" >&2
+              echo "a key for $n remains in $f after removal" >&2
               exit 1
             fi
           done
-          rm -f "$f.old"
+          rm -f "$work/kh" "$work/kh.old"
         done
         echo "$removed"
       args:
