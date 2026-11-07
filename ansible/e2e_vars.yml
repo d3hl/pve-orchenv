@@ -17,3 +17,8 @@ e2e_iso_storage: local
 e2e_iso_name: pve-orchenv-ipxe.iso
 e2e_iso_volid: "{{ e2e_iso_storage }}:iso/{{ e2e_iso_name }}"
 e2e_cache: "{{ playbook_dir }}/../cache/e2e"
+
+# Memory: the hypervisor has 15.6 GB, so nodes install one at a time at 8192 MB, then run at 3072 MB.
+e2e_install_memory: 8192   # 6144 fails: initramfs (1.7 GB ISO-in-initrd) unpack hits "write error"
+e2e_steady_memory: 3072
+e2e_install_retries: 90   # x 20 s = 30 min per node

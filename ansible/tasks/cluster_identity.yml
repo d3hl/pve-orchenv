@@ -1,0 +1,21 @@
+---
+# Inputs: identity_label. Runs on one surviving node and records what identifies the cluster in the fact
+# e2e_identities[<label>]: name, corosync auth key digest (set at pvecm create, never changed by joins),
+# config version, and node IDs by name (survivors keep theirs when another node is rebuilt).
+- name: Read the cluster state
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "name=$(awk '/cluster_name:/ {print $2}' /etc/pve/corosync.conf)"
+    echo "authkey=$(sha256sum /etc/corosync/authkey | cut -d' ' -f1)"
+    echo "version=$(awk '/config_version:/ {print $2}' /etc/pve/corosync.conf)"
+    awk '/^ *name:/ {n=$2} /^ *nodeid:/ {print "node-" n "=" $2}' /etc/pve/corosync.conf
+  args:
+    executable: /bin/bash
+  register: identity_raw
+  changed_when: false
+  no_log: true
+
+- name: Record the cluster identity as {{ identity_label }}
+  ansible.builtin.set_fact:
+    e2e_identities: >-
+      {{ (e2e_identities | default({})) | combine({identity_label: identity_raw.stdout_lines | map('split', '=') | items2dict(key_name=0, value_name=1)}) }}

@@ -1,0 +1,66 @@
+---
+# End-to-end acceptance test on the three nested nodes brought up by e2e_up.yml (make e2e-up).
+# Usage (from the repo root): make e2e   (= e2e-up, this playbook, e2e-down unless KEEP=1)
+#   ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/e2e.yml -i inventory/e2e.yml
+# Order: site.yml; site.yml again (must change nothing); verify_*; rebuild a member; rebuild the primary
+# (the cluster must stay the same cluster). Sub-playbooks that need --limit run as child ansible-playbook
+# processes; their logs go to cache/e2e/.
+- name: Configure the nodes (first run)
+  ansible.builtin.import_playbook: site.yml
+
+# Storage role guarantee: it never touches an existing pool. verify_storage.yml checks this marker.
+- name: Plant a marker dataset in the existing pool of the primary
+  hosts: e2e-pve1
+  gather_facts: false
+  tasks:
+    - name: Create tank/keepme
+      ansible.builtin.shell: zfs list -H tank/keepme >/dev/null 2>&1 || zfs create tank/keepme
+      register: marker
+      changed_when: true
+      args:
+        executable: /bin/bash
+
+- name: Second run must change nothing
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run site.yml again
+      ansible.builtin.include_tasks: tasks/e2e_child.yml
+      vars: {child_name: site-second, child_args: ansible/site.yml}
+
+    - name: Every host reports changed=0 failed=0 unreachable=0
+      ansible.builtin.command: "{{ ansible_playbook_python }} {{ playbook_dir }}/tests/recap_check.py"
+      args:
+        stdin: "{{ child_run.stdout }}"
+      changed_when: false
+
+- name: Verify base
+  ansible.builtin.import_playbook: tests/verify_base.yml
+- name: Verify network
+  ansible.builtin.import_playbook: tests/verify_network.yml
+- name: Verify cluster
+  ansible.builtin.import_playbook: tests/verify_cluster.yml
+- name: Verify storage
+  ansible.builtin.import_playbook: tests/verify_storage.yml
+
+- name: Rebuild a member (e2e-pve3)
+  ansible.builtin.import_playbook: e2e_scenario.yml
+  vars: {host: e2e-pve3}
+
+- name: Rebuild the primary (e2e-pve1)
+  ansible.builtin.import_playbook: e2e_scenario.yml
+  vars: {host: e2e-pve1}
+
+- name: Done
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Recap
+      ansible.builtin.debug:
+        msg:
+          - "e2e PASSED: 3-node cluster {{ cluster_name }} built from bare metal"
+          - "second site.yml run: changed=0 on every node"
+          - "verify_base/network/cluster/storage passed"
+          - "member e2e-pve3 and primary e2e-pve1 each rebuilt and rejoined the same cluster"

@@ -33,10 +33,17 @@ lint:
 	ANSIBLE_CONFIG=ansible/ansible.cfg .venv/bin/ansible-lint ansible/ && .venv/bin/yamllint .
 
 # Nested PVE test nodes (VMIDs 9901-9903) on the e2e hypervisor. KEEP=1 skips the teardown.
-.PHONY: e2e-up e2e-down
+.PHONY: e2e-up e2e-run e2e-down e2e
 e2e-up:
 	ANSIBLE_CONFIG=ansible/ansible.cfg .venv/bin/ansible-playbook ansible/e2e_up.yml -i inventory/e2e.yml
 
 e2e-down:
 	@if [ -n "$(KEEP)" ]; then echo "KEEP set: leaving the e2e VMs in place"; else \
 	ANSIBLE_CONFIG=ansible/ansible.cfg .venv/bin/ansible-playbook ansible/e2e_down.yml -i inventory/e2e.yml; fi
+
+# Acceptance test: bring up, run the scenarios, tear down. KEEP=1 skips the teardown. After a failure the
+# VMs stay up for inspection (make e2e-down removes them).
+e2e-run:
+	ANSIBLE_CONFIG=ansible/ansible.cfg .venv/bin/ansible-playbook ansible/e2e.yml -i inventory/e2e.yml
+
+e2e: e2e-up e2e-run e2e-down

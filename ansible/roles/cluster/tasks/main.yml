@@ -32,9 +32,27 @@
     fail_msg: "node name {{ ansible_facts['hostname'] }} differs from inventory hostname {{ inventory_hostname }}"
     quiet: true
 
+# With --limit only some pve hosts are in the play. The others are probed over a delegated connection so a
+# rebuilt node can be configured alone; a probe of an unreachable host fails the play (fail closed).
+- name: Read the cluster state of pve hosts outside this play
+  ansible.builtin.shell: |
+    set -o pipefail
+    pvecm status 2>/dev/null || true
+    if [ -f /etc/pve/corosync.conf ]; then
+      echo "corosync-name: $(awk '/^ *cluster_name:/ {print $2}' /etc/pve/corosync.conf)"
+    fi
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['pve'] | difference(ansible_play_hosts_all) }}"
+  register: cluster_outside
+  changed_when: false
+  check_mode: false
+  run_once: true
+
 # An unreachable host silently leaves the play; if it was the only clustered node a fresh one
 # would create a second cluster. Fail closed before any create/join decision.
-- name: Every pve host must be reached and report its cluster state
+- name: Every pve host in the play must be reached and report its cluster state
   ansible.builtin.assert:
     that: missing_hosts | length == 0
     fail_msg: >-
@@ -43,32 +61,45 @@
     quiet: true
   vars:
     undiscovered: "{{ ansible_play_hosts | map('extract', hostvars) | rejectattr('pve_cluster_name', 'defined') | map(attribute='inventory_hostname') | list }}"
-    missing_hosts: "{{ groups['pve'] | difference(ansible_play_hosts) | union(undiscovered) | list }}"
+    missing_hosts: "{{ ansible_play_hosts_all | difference(ansible_play_hosts) | union(undiscovered) | list }}"
+  run_once: true
+
+# cluster_states: one row per pve host with the cluster name it is in ('' if none) and whether it is quorate.
+- name: Collect the cluster state of the hosts in the play
+  ansible.builtin.set_fact:
+    cluster_states: >-
+      {{ cluster_states | default([]) + [{'host': item, 'name': hostvars[item].pve_cluster_name,
+                                          'quorate': hostvars[item].pve_cluster_quorate | bool}] }}
+  loop: "{{ ansible_play_hosts }}"
+  run_once: true
+
+- name: Collect the cluster state of the hosts outside the play
+  ansible.builtin.set_fact:
+    cluster_states: >-
+      {{ cluster_states + [{'host': item.item,
+                            'name': (item.stdout | regex_search('(?m)^corosync-name: (\S+)', '\1') or [''])[0],
+                            'quorate': item.stdout is search('(?m)^Quorate:\s+Yes')}] }}
+  loop: "{{ cluster_outside.results }}"
+  loop_control:
+    label: "{{ item.item }}"
   run_once: true
 
 - name: Refuse to continue when a node is in a foreign or non-quorate cluster
   ansible.builtin.assert:
     that: >-
-      groups['pve'] | map('extract', hostvars) | selectattr('pve_cluster_name', 'defined')
-      | selectattr('pve_cluster_name', 'ne', '')
-      | rejectattr('pve_cluster_name', 'eq', cluster_name) | list | length == 0
+      cluster_states | selectattr('name', 'ne', '') | rejectattr('name', 'eq', cluster_name) | list | length == 0
       and
-      groups['pve'] | map('extract', hostvars) | selectattr('pve_cluster_name', 'defined')
-      | selectattr('pve_cluster_name', 'eq', cluster_name)
-      | rejectattr('pve_cluster_quorate') | list | length == 0
+      cluster_states | selectattr('name', 'eq', cluster_name) | rejectattr('quorate') | list | length == 0
     fail_msg: >-
       Refusing to create or join a cluster: some node is already in a cluster with a different name
-      or without quorum ({{ groups['pve'] | map('extract', hostvars) | selectattr('pve_cluster_name', 'defined')
-      | selectattr('pve_cluster_name', 'ne', '') | map(attribute='inventory_hostname') | list }}).
+      or without quorum ({{ cluster_states | selectattr('name', 'ne', '') | map(attribute='host') | list }}).
       Fix or remove that node by hand (this role never deletes cluster state), then re-run.
     quiet: true
   run_once: true
 
 - name: Pick the nodes that are quorate members of cluster_name
   ansible.builtin.set_fact:
-    cluster_members: >-
-      {{ groups['pve'] | map('extract', hostvars) | selectattr('pve_cluster_name', 'defined')
-         | selectattr('pve_cluster_name', 'eq', cluster_name) | map(attribute='inventory_hostname') | list }}
+    cluster_members: "{{ cluster_states | selectattr('name', 'eq', cluster_name) | map(attribute='host') | list }}"
   run_once: true
 
 - name: Warn when the cluster has exactly two nodes

@@ -1,0 +1,28 @@
+---
+# Inputs: child_name, child_args (e.g. "ansible/site.yml --limit e2e-pve3"). Runs a child ansible-playbook from the
+# repo root against inventory/e2e.yml, saves its output to cache/e2e/<child_name>.log, and fails with the tail on error.
+# Result: child_run.stdout.
+- name: Run ansible-playbook {{ child_args }}
+  ansible.builtin.command: "{{ ansible_playbook_python | dirname }}/ansible-playbook {{ child_args }} -i inventory/e2e.yml"
+  environment:
+    ANSIBLE_CONFIG: ansible/ansible.cfg
+  args:
+    chdir: "{{ playbook_dir }}/.."
+  register: child_run
+  failed_when: false
+  changed_when: false
+
+- name: Save the output of {{ child_name }}
+  ansible.builtin.copy:
+    content: "{{ child_run.stdout }}\n{{ child_run.stderr }}\n"
+    dest: "{{ playbook_dir }}/../cache/e2e/{{ child_name }}.log"
+    mode: "0600"
+  changed_when: false
+
+- name: The child run succeeded
+  ansible.builtin.assert:
+    that: child_run.rc == 0
+    fail_msg: >-
+      {{ child_args }} failed (rc={{ child_run.rc }}, full log cache/e2e/{{ child_name }}.log):
+      {{ (child_run.stdout_lines | default([]))[-25:] | join('\n') }}
+    quiet: true

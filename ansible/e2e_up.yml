@@ -9,10 +9,6 @@
   connection: local
   gather_facts: false
   vars_files: [e2e_vars.yml]
-  vars:
-    e2e_install_memory: 8192   # 6144 fails: initramfs (1.7 GB ISO-in-initrd) unpack hits "write error"
-    e2e_steady_memory: 3072
-    e2e_install_retries: 90   # x 20 s = 30 min per node
   tasks:
     - name: Preflight
       ansible.builtin.include_tasks: tasks/preflight.yml

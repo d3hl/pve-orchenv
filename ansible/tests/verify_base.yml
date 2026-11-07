@@ -190,7 +190,7 @@
         that:
           - item.stat.exists
           - item.stat.mode == '0600'
-        fail_msg: "{{ item.invocation.module_args.path | basename }} missing or not 0600"
+        fail_msg: "{{ item.stat.path | basename }} missing or not 0600"
       loop: "{{ secret_files.results }}"
       loop_control:
         label: "{{ item.item.tokenid }}"

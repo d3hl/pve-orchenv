@@ -1,0 +1,131 @@
+---
+# Prepare the cluster and the boot server to reinstall one node.
+# Usage (from the repo root):
+#   ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/rebuild.yml -i inventory/hosts.yml -e host=<name>
+# The operator then PXE-boots the box and runs site.yml --limit <name>. For the e2e VMs, destroying and
+# recreating the VM is ansible/e2e_reinstall.yml's job, not this playbook's.
+- name: Check the rebuild request
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: A host name is required and must be in the inventory
+      ansible.builtin.assert:
+        that:
+          - host is defined
+          - host in groups['pve']
+          - site is defined
+        fail_msg: >-
+          usage: ansible-playbook ansible/rebuild.yml -i inventory/<site>.yml -e host=<name>
+          (host must be in group pve; got '{{ host | default('') }}')
+        quiet: true
+
+    - name: Read the boot server address of this site
+      ansible.builtin.set_fact:
+        rebuild_boot_url: >-
+          http://{{ lookup('ansible.builtin.ini', 'BOOTSERVER_HOST type=properties file=' ~ rebuild_env_file) }}:{{
+          lookup('ansible.builtin.ini', 'BOOTSERVER_HTTP_PORT type=properties file=' ~ rebuild_env_file) }}
+      vars:
+        rebuild_env_file: "{{ playbook_dir }}/../config/{{ site }}.env"
+
+# The target is skipped everywhere below: it is the node being replaced and may already be down.
+- name: Cluster side
+  hosts: pve
+  gather_facts: false
+  tags: [cluster]
+  vars:
+    rebuild_ip: "{{ hostvars[host].mgmt_ip | split('/') | first }}"
+  tasks:
+    - name: Ask each surviving node for its cluster state
+      ansible.builtin.command: pvecm status
+      register: rebuild_status
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname != host
+
+    - name: Pick a quorate surviving node
+      ansible.builtin.set_fact:
+        rebuild_survivor: >-
+          {{ ansible_play_hosts | difference([host])
+             | map('extract', hostvars) | selectattr('rebuild_status.rc', 'defined') | selectattr('rebuild_status.rc', 'eq', 0)
+             | selectattr('rebuild_status.stdout', 'search', '(?m)^Quorate:\s+Yes')
+             | map(attribute='inventory_hostname') | list | first | default('') }}
+
+    - name: Another node must be quorate
+      ansible.builtin.assert:
+        that: rebuild_survivor != ''
+        fail_msg: >-
+          No other pve node is quorate, so {{ host }} cannot be removed from the cluster safely.
+          Nothing was changed. Bring a quorate node up first.
+        quiet: true
+
+    - name: Remove the node from the cluster (an absent node is fine)
+      ansible.builtin.command: "pvecm delnode {{ host | quote }}"
+      register: rebuild_delnode
+      changed_when: rebuild_delnode.rc == 0
+      failed_when: rebuild_delnode.rc != 0 and rebuild_delnode.stderr is not search('not a known host|not found|does not exist|unknown node', ignorecase=true)
+      when: inventory_hostname == rebuild_survivor
+
+    - name: Remove the node's leftover config from the shared /etc/pve
+      ansible.builtin.file:
+        path: "/etc/pve/nodes/{{ host }}"
+        state: absent
+      when: inventory_hostname == rebuild_survivor
+
+    # A reinstalled host has new SSH host keys. pmxcfs holds the cluster-wide /etc/pve/priv/known_hosts.
+    - name: Forget the node's old SSH host keys on the surviving nodes
+      ansible.builtin.shell: |
+        set -o pipefail
+        for f in /root/.ssh/known_hosts /etc/pve/priv/known_hosts; do
+          [ -f "$f" ] || continue
+          for n in {{ host | quote }} {{ rebuild_ip | quote }}; do
+            ssh-keygen -f "$f" -R "$n" 2>&1 | grep -c '^# Host .* found' || true
+          done
+          rm -f "$f.old"
+        done
+      args:
+        executable: /bin/bash
+      register: rebuild_keys
+      changed_when: rebuild_keys.stdout_lines | map('int') | sum > 0
+      when: inventory_hostname != host
+
+- name: Operator side
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [boot]
+  vars:
+    rebuild_file: "{{ hostvars[host].operator_known_hosts | default('~/.ssh/known_hosts') }}"
+    rebuild_ip: "{{ hostvars[host].mgmt_ip | split('/') | first }}"
+  tasks:
+    - name: Check for the operator's known_hosts
+      ansible.builtin.stat:
+        path: "{{ rebuild_file }}"
+      register: rebuild_kh
+
+    - name: Forget the node's old SSH host keys locally
+      ansible.builtin.command: "ssh-keygen -f {{ rebuild_file | quote }} -R {{ item | quote }}"
+      register: rebuild_local_keys
+      changed_when: rebuild_local_keys.stdout is search('found')
+      loop: ["{{ host }}", "{{ rebuild_ip }}"]
+      when: rebuild_kh.stat.exists
+
+    - name: Remove the ssh-keygen backup
+      ansible.builtin.file:
+        path: "{{ rebuild_file }}.old"
+        state: absent
+      when: rebuild_kh.stat.exists
+
+    - name: Let the answer service install the node again
+      ansible.builtin.uri:
+        url: "{{ rebuild_boot_url }}/reset/{{ host }}"
+        method: POST
+        status_code: 200
+      changed_when: true
+
+    - name: Next steps
+      ansible.builtin.debug:
+        msg: >-
+          Set `install: true` for `{{ host }}`, restart or reload the answer service, PXE-boot the host,
+          then run `site.yml --limit {{ host }}`.

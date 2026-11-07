@@ -1,0 +1,47 @@
+---
+# Wipe and reinstall one e2e VM: destroy it with its disks, recreate it, and install PVE through the boot server.
+# Reuses the e2e_up task files. Only VMIDs 9901-9903 can be touched (tasks/vm_destroy.yml guards that).
+# Usage: ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/e2e_reinstall.yml -i inventory/e2e.yml -e host=e2e-pve3
+- name: Reinstall one e2e VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [e2e_vars.yml]
+  tasks:
+    - name: Preflight
+      ansible.builtin.include_tasks: tasks/preflight.yml
+
+    - name: The host must be an e2e node
+      ansible.builtin.assert:
+        that: host is defined and host in groups['pve']
+        quiet: true
+
+    - name: Destroy the VM and its disks
+      ansible.builtin.include_tasks: tasks/vm_destroy.yml
+      vars:
+        vmid: "{{ hostvars[host].vmid | int }}"
+
+    - name: Recreate and install
+      block:
+        - name: Create the VM
+          ansible.builtin.include_tasks: tasks/vm_create.yml
+          vars: {vm_name: "{{ host }}"}
+        - name: Install the VM
+          ansible.builtin.include_tasks: tasks/vm_install.yml
+          vars: {vm_name: "{{ host }}"}
+      rescue:
+        - name: Save diagnostics to cache/e2e/
+          ansible.builtin.include_tasks: tasks/diagnostics.yml
+        - name: Fail
+          ansible.builtin.fail:
+            msg: "reinstall of {{ host }} failed (diagnostics in {{ e2e_cache }}): {{ ansible_failed_result.msg | default('see above') }}"
+
+- name: Prove root SSH works on the reinstalled node
+  hosts: pve
+  gather_facts: false
+  tasks:
+    - name: Wait for an Ansible connection as root
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        delay: 10
+      when: inventory_hostname == host

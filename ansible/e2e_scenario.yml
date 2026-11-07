@@ -1,0 +1,57 @@
+---
+# Rebuild one node end to end and prove the cluster is still the same cluster. Input: host (an e2e node).
+# Imported by e2e.yml for a member and for the primary.
+- name: Record the cluster identity before the rebuild
+  hosts: e2e-pve2
+  gather_facts: false
+  tasks:
+    - name: Read it
+      ansible.builtin.include_tasks: tasks/cluster_identity.yml
+      vars: {identity_label: "before-{{ host }}"}
+
+- name: Prepare the cluster and boot server
+  ansible.builtin.import_playbook: rebuild.yml
+
+- name: Wipe and reinstall the node
+  ansible.builtin.import_playbook: e2e_reinstall.yml
+
+- name: Configure the node again
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run site.yml --limit {{ host }}
+      ansible.builtin.include_tasks: tasks/e2e_child.yml
+      vars: {child_name: "site-limit-{{ host }}", child_args: "ansible/site.yml --limit {{ host }}"}
+
+- name: Verify the cluster after the rebuild
+  ansible.builtin.import_playbook: tests/verify_cluster.yml
+
+- name: Same cluster after the rebuild
+  hosts: e2e-pve2
+  gather_facts: false
+  tasks:
+    - name: Read the identity again
+      ansible.builtin.include_tasks: tasks/cluster_identity.yml
+      vars: {identity_label: "after-{{ host }}"}
+
+    - name: Same name and auth key; every node that was not rebuilt keeps its node ID
+      ansible.builtin.assert:
+        that:
+          - after.name == before.name
+          - after.authkey == before.authkey
+          - after['node-' ~ item] == before['node-' ~ item]
+        fail_msg: "cluster identity changed after rebuilding {{ host }}: before {{ before }} after {{ after }}"
+        quiet: true
+      vars:
+        before: "{{ e2e_identities['before-' ~ host] }}"
+        after: "{{ e2e_identities['after-' ~ host] }}"
+      loop: "{{ groups['pve'] | difference([host]) }}"
+      no_log: true
+
+    - name: Show the identity (secrets hidden)
+      ansible.builtin.debug:
+        msg: >-
+          {{ host }}: cluster {{ e2e_identities['after-' ~ host].name }},
+          authkey sha256 {{ e2e_identities['after-' ~ host].authkey[:12] }} (same as before),
+          config_version {{ e2e_identities['before-' ~ host].version }} -> {{ e2e_identities['after-' ~ host].version }}

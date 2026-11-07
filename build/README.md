@@ -104,3 +104,36 @@ ansible-vault edit inventory/group_vars/all/vault.yml --vault-password-file conf
 ```
 
 When changing the root password, update `vault_root_password` and regenerate `vault_root_password_hash` together. `bootserver/answer/tests/fixtures/vault.yml` holds fake values only (password `test`).
+
+## Operator runbook
+
+Sites: `e2e` (nested test cluster) and `remote` (the real site, boot server at 10.10.10.21). Config lives in `config/<site>.env`; the inventory is `inventory/<site>.yml` (`inventory/hosts.yml` for `remote`). Run everything from the repo root with `ANSIBLE_CONFIG=ansible/ansible.cfg` and `.venv/bin/`.
+
+### First build of a site
+
+1. Fill `inventory/hosts.yml`: per host `mac`, `mgmt_ip`, `root_disks.serials` (from `lsblk -o NAME,SERIAL` on the box), `cluster_role` (exactly one `primary`), and `install: true`.
+2. `make test && make check` (lint the inventory, render and validate every answer).
+3. `make build SITE=remote` (downloads and verifies the ISO, builds the iPXE binaries and `ipxe.iso`).
+4. Deploy the boot server to the site's boot VM: `bootserver/bootserver.sh deploy remote` (rsyncs `dist/`, the inventory and the answer service to `BOOTSERVER_SSH`, `root@10.10.10.21`, and starts the pod there). Without `make`, that script is the whole interface; `DRY_RUN=1` prints what it would do.
+5. Router (DHCP): `next-server` (TFTP server) `10.10.10.21`; boot file for UEFI clients `ipxe.efi`, for BIOS clients `undionly.kpxe`. Nothing else is needed on the router.
+6. Set the machines to boot from the network first (then disk), power them on. Each one fetches its answer by MAC, installs, and reports `done`. Check progress with `curl http://10.10.10.21:8080/status` until every host is `installed`.
+7. Configure: `ansible-playbook ansible/site.yml -i inventory/hosts.yml` (base, network, cluster, storage, access). A second run must change nothing.
+
+### Adding a host
+
+Add it to `inventory/hosts.yml` (`install: true`, `cluster_role: member`), then `make test && make check`, `bootserver/bootserver.sh deploy remote` to ship the new inventory to the answer service (no new build is needed, the build does not embed the inventory), PXE-boot the box, and run `ansible-playbook ansible/site.yml -i inventory/hosts.yml --limit <name>`. The cluster role joins it to the running cluster.
+
+### Rebuilding a host
+
+Use this when a node's disks are lost or you want a clean install. The cluster keeps running on the other nodes (one of them must be quorate).
+
+1. `ansible-playbook ansible/rebuild.yml -i inventory/hosts.yml -e host=<name>` removes the node from the cluster (`pvecm delnode`, `/etc/pve/nodes/<name>`), forgets its SSH host keys on your machine and on the remaining nodes, and resets its install state in the answer service (`POST /reset/<name>`).
+2. Make sure `install: true` is set for `<name>` in the inventory; if you changed it, redeploy with `bootserver/bootserver.sh deploy remote`.
+3. PXE-boot the machine (a second boot without step 1 gets 404 because the state is `installed`; the installer stops and the disks are untouched).
+4. `ansible-playbook ansible/site.yml -i inventory/hosts.yml --limit <name>` reconfigures it and joins it to the same cluster. The other nodes are probed, so they must be reachable.
+
+The primary can be rebuilt the same way: `cluster_role: primary` only decides who creates a cluster that does not exist yet; with a quorate cluster present the rebuilt primary joins it as a member.
+
+### End-to-end acceptance test
+
+`make e2e` brings up the three nested nodes (VMIDs 9901-9903), runs `site.yml` twice (the second run must report `changed=0`), the `verify_*` plays, then rebuilds a member and the primary and checks that the cluster is the same cluster (same name, corosync auth key and node IDs of the untouched nodes). `KEEP=1 make e2e` leaves the nodes up. After a failure the VMs stay up for inspection; `make e2e-down` removes them. Logs of the child runs are in `cache/e2e/`.
