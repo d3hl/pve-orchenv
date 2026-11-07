@@ -10,3 +10,6 @@ storage: {}
 #    zfspool: pool | lvmthin: vg, thinpool | nfs: server, export | cifs: server, share}
 # cifs credentials: vault_smb_credentials[<id>] = {username, password}
 pve_storages: []
+
+# Where disks are looked up by serial (a test points this at a fake tree; see disks.yml).
+storage_byid_dir: /dev/disk/by-id

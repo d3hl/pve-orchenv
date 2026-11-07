@@ -1,13 +1,29 @@
 ---
 # Input: storage_pool.serials. Output: storage_devices (one /dev/disk/by-id path per serial).
+# A disk matches a serial only EXACTLY, the same rule as the root disk filters (build/README.md
+# DISK_STRATEGY): udev ID_SERIAL_SHORT == serial, or udev ID_SERIAL == "<model>_<serial>". Never a
+# substring, so a missing disk can never be replaced by another disk whose name contains the string.
 # Several by-id aliases may point at one disk, so exactly one distinct non-partition device must match.
-- name: Find the by-id links for each serial
+- name: Find the disk with each serial
   ansible.builtin.shell: |
-    for f in /dev/disk/by-id/*{{ item | quote }}*; do
+    set -u -o pipefail
+    want={{ item | quote }}
+    # Aliases that name the serial (ata-<model>_<serial>, nvme-...) sort first, before wwn-/eui. ones.
+    for f in {{ storage_byid_dir | quote }}/*; do
       case "$f" in *-part*) continue ;; esac
-      [ -e "$f" ] && echo "$(readlink -f -- "$f") $f"
-    done
+      [ -e "$f" ] || continue
+      dev=$(readlink -f -- "$f")
+      props=$(udevadm info --query=property --name="$dev" 2>/dev/null) || continue
+      short=$(printf '%s\n' "$props" | sed -n 's/^ID_SERIAL_SHORT=//p')
+      full=$(printf '%s\n' "$props" | sed -n 's/^ID_SERIAL=//p')
+      if [ "$short" = "$want" ] || { [ -n "$full" ] && [ "${full%_"$want"}" != "$full" ]; }; then
+        case "${f##*/}" in *_"$want") prio=0 ;; *) prio=1 ;; esac
+        echo "$prio $dev $f"
+      fi
+    done | sort -s -k1,1n | cut -d' ' -f2-
     true
+  args:
+    executable: /bin/bash
   register: storage_found
   changed_when: false
   check_mode: false
@@ -16,7 +32,7 @@
 - name: Every serial matches exactly one disk
   ansible.builtin.assert:
     that: item.stdout_lines | map('split', ' ') | map('first') | unique | length == 1
-    fail_msg: "serial {{ item.item }} must match exactly one disk in /dev/disk/by-id (got: {{ item.stdout_lines }})"
+    fail_msg: "serial {{ item.item }} must match exactly one disk in {{ storage_byid_dir }} (got: {{ item.stdout_lines }})"
     quiet: true
   loop: "{{ storage_found.results }}"
   loop_control:
