@@ -1,7 +1,8 @@
 ---
 # Prepare the cluster and the boot server to reinstall one node.
 # Usage (from the repo root):
-#   ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/rebuild.yml -i inventory/hosts.yml -e host=<name>
+#   ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook ansible/rebuild.yml -i inventory/hosts.yml -e host=<name> -e confirm=<name>
+# confirm must equal host: the playbook removes the node from the cluster, so it refuses to run without it.
 # The operator then PXE-boots the box and runs site.yml --limit <name>. For the e2e VMs, destroying and
 # recreating the VM is ansible/e2e_reinstall.yml's job, not this playbook's.
 - name: Check the rebuild request
@@ -16,9 +17,12 @@
           - host is defined
           - host in groups['pve']
           - site is defined
+          - confirm is defined
+          - confirm == host
         fail_msg: >-
-          usage: ansible-playbook ansible/rebuild.yml -i inventory/<site>.yml -e host=<name>
-          (host must be in group pve; got '{{ host | default('') }}')
+          usage: ansible-playbook ansible/rebuild.yml -i inventory/<site>.yml -e host=<name> -e confirm=<name>
+          (host must be in group pve and confirm must equal host; got host='{{ host | default('') }}'
+          confirm='{{ confirm | default('') }}'). Nothing was changed.
         quiet: true
 
     - name: Read the boot server address of this site
@@ -77,17 +81,26 @@
     - name: Forget the node's old SSH host keys on the surviving nodes
       ansible.builtin.shell: |
         set -o pipefail
+        removed=0
         for f in /root/.ssh/known_hosts /etc/pve/priv/known_hosts; do
           [ -f "$f" ] || continue
           for n in {{ host | quote }} {{ rebuild_ip | quote }}; do
-            ssh-keygen -f "$f" -R "$n" 2>&1 | grep -c '^# Host .* found' || true
+            if ssh-keygen -F "$n" -f "$f" >/dev/null 2>&1; then
+              ssh-keygen -f "$f" -R "$n" >/dev/null || { echo "ssh-keygen -R $n failed on $f" >&2; exit 1; }
+              removed=$((removed + 1))
+            fi
+            if ssh-keygen -F "$n" -f "$f" >/dev/null 2>&1; then
+              echo "a key for $n remains in $f after ssh-keygen -R" >&2
+              exit 1
+            fi
           done
           rm -f "$f.old"
         done
+        echo "$removed"
       args:
         executable: /bin/bash
       register: rebuild_keys
-      changed_when: rebuild_keys.stdout_lines | map('int') | sum > 0
+      changed_when: rebuild_keys.stdout | trim | int > 0
       when: inventory_hostname != host
 
 - name: Operator side

@@ -11,6 +11,7 @@
 
 - name: Prepare the cluster and boot server
   ansible.builtin.import_playbook: rebuild.yml
+  vars: {confirm: "{{ host }}"}
 
 - name: Wipe and reinstall the node
   ansible.builtin.import_playbook: e2e_reinstall.yml

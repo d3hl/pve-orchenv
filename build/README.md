@@ -127,7 +127,7 @@ Add it to `inventory/hosts.yml` (`install: true`, `cluster_role: member`), then 
 
 Use this when a node's disks are lost or you want a clean install. The cluster keeps running on the other nodes (one of them must be quorate).
 
-1. `ansible-playbook ansible/rebuild.yml -i inventory/hosts.yml -e host=<name>` removes the node from the cluster (`pvecm delnode`, `/etc/pve/nodes/<name>`), forgets its SSH host keys on your machine and on the remaining nodes, and resets its install state in the answer service (`POST /reset/<name>`).
+1. `ansible-playbook ansible/rebuild.yml -i inventory/hosts.yml -e host=<name> -e confirm=<name>` (the explicit `confirm` is required; without it nothing is changed) removes the node from the cluster (`pvecm delnode`, `/etc/pve/nodes/<name>`), forgets its SSH host keys on your machine and on the remaining nodes, and resets its install state in the answer service (`POST /reset/<name>`).
 2. Make sure `install: true` is set for `<name>` in the inventory; if you changed it, redeploy with `bootserver/bootserver.sh deploy remote`.
 3. PXE-boot the machine (a second boot without step 1 gets 404 because the state is `installed`; the installer stops and the disks are untouched).
 4. `ansible-playbook ansible/site.yml -i inventory/hosts.yml --limit <name>` reconfigures it and joins it to the same cluster. The other nodes are probed, so they must be reachable.
