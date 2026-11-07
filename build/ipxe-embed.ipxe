@@ -1,3 +1,6 @@
 #!ipxe
-dhcp
-chain http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/boot.ipxe
+# Embedded in ipxe.efi / undionly.kpxe / ipxe.iso. No DHCP lease, no boot server, or nothing to install:
+# leave iPXE so the firmware boots its next device (the local disk). Never stop at a shell or hang.
+dhcp || exit 1
+chain http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/boot.ipxe || exit 1
+exit 0

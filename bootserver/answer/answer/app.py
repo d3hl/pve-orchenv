@@ -72,6 +72,46 @@ def create_app(inventory_paths: list[Path], secrets_path: Path,
         _log(route, macs, host, outcome)
         return Response("", status=code)
 
+    def eligible(inv: Inventory, macs: list[str]):
+        """(host, None) when an answer may be served for these MACs, else (None, (logged host, outcome))."""
+        matches = [h for h in inv.hosts.values() if h.mac and h.mac in macs]
+        if not matches:
+            return None, (None, "unknown-mac")
+        if len(matches) > 1:
+            return None, ([h.name for h in matches], "ambiguous-mac")
+        host = matches[0]
+        if _host_lint_errors(inv, host):
+            return None, (host.name, "invalid-host")
+        if not host.install:
+            return None, (host.name, "install-disabled")
+        if store.get(host.name)["state"] == "installed":
+            return None, (host.name, "already-installed")
+        return host, None
+
+    # Boot gate for iPXE (build/boot.ipxe.tmpl): 200 only when /answer would serve this MAC, so a
+    # host that would get a 404 answer never starts the installer and boots its local disk instead.
+    # Read-only: does not change the install state.
+    @app.get("/boot/<mac>")
+    def boot(mac):
+        try:
+            macs = [normalize_mac(mac)]
+        except ValueError:
+            return deny("/boot", [], None, "bad-request", 400)
+        inv = inventory()
+        if inv is None:
+            return deny("/boot", macs, None, "invalid-host")
+        try:
+            host, refusal = eligible(inv, macs)
+        except (StateError, OSError):
+            return deny("/boot", macs, None, "state-error")
+        except Exception as e:  # never 500 or fail open; log the type only
+            _audit.error(json.dumps({"route": "/boot", "error": type(e).__name__}))
+            return deny("/boot", macs, None, "internal-error")
+        if refusal:
+            return deny("/boot", macs, refusal[0], refusal[1])
+        _log("/boot", macs, host.name, "install")
+        return Response("install\n", mimetype="text/plain")
+
     @app.post("/answer")
     def answer():
         try:
@@ -84,30 +124,22 @@ def create_app(inventory_paths: list[Path], secrets_path: Path,
         inv = inventory()
         if inv is None:
             return deny("/answer", macs, None, "invalid-host")
+        host = None
         try:
-            matches = [h for h in inv.hosts.values() if h.mac and h.mac in macs]
-            if not matches:
-                return deny("/answer", macs, None, "unknown-mac")
-            if len(matches) > 1:
-                return deny("/answer", macs, [h.name for h in matches], "ambiguous-mac")
-            host = matches[0]
-            if _host_lint_errors(inv, host):
-                return deny("/answer", macs, host.name, "invalid-host")
-            if not host.install:
-                return deny("/answer", macs, host.name, "install-disabled")
-            if store.get(host.name)["state"] == "installed":
-                return deny("/answer", macs, host.name, "already-installed")
+            host, refusal = eligible(inv, macs)
+            if refusal:
+                return deny("/answer", macs, refusal[0], refusal[1])
             text = render_answer(host, inv.group_vars, secrets, base_url, body)
             store.mark_served(host.name)
         except DiskMismatch:
-            return deny("/answer", macs, host.name, "disk-mismatch")
+            return deny("/answer", macs, host and host.name, "disk-mismatch")
         except (StateError, OSError):
-            return deny("/answer", macs, host.name, "state-error")
+            return deny("/answer", macs, host and host.name, "state-error")
         except (ValueError, KeyError, TypeError):
-            return deny("/answer", macs, host.name, "invalid-host")
+            return deny("/answer", macs, host and host.name, "invalid-host")
         except Exception as e:  # never 500 or fail open; log the type only
             _audit.error(json.dumps({"route": "/answer", "error": type(e).__name__}))
-            return deny("/answer", macs, host.name, "internal-error")
+            return deny("/answer", macs, host and host.name, "internal-error")
         _log("/answer", macs, host.name, "served")
         return Response(text, mimetype="application/toml")
 

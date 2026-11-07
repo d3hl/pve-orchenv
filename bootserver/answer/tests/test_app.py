@@ -335,3 +335,58 @@ def test_decision_outcomes_logged(env, client, caplog):
         post_answer(client, [PVE1])
         assert last(caplog) == "disk-mismatch"
 
+
+# --- /boot/<mac>: iPXE gate (build/boot.ipxe.tmpl) ----------------------------
+
+def boot(client, mac):
+    return client.get(f"/boot/{mac}")
+
+
+@pytest.mark.parametrize("mac", ["aa-bb-cc-dd-ee-01", "AA:BB:CC:DD:EE:01", "aabbccddee01"])
+def test_boot_gate_eligible_host(client, mac):
+    r = boot(client, mac)
+    assert r.status_code == 200 and r.data == b"install\n"
+    assert state(client, "pve1") == "new"   # read-only: the gate never marks a host served
+
+
+def test_boot_gate_unknown_mac_404(client, caplog):
+    with caplog.at_level(logging.INFO):
+        assert boot(client, "00-00-00-00-00-99").status_code == 404
+    assert last(caplog) == "unknown-mac"
+
+
+def test_boot_gate_install_false_404(client, caplog):
+    with caplog.at_level(logging.INFO):
+        assert boot(client, "aa-bb-cc-dd-ee-02").status_code == 404
+    assert last(caplog) == "install-disabled"
+
+
+def test_boot_gate_installed_404_until_reset(client, caplog):
+    post_answer(client, [PVE1])
+    client.post("/done/pve1")
+    with caplog.at_level(logging.INFO):
+        assert boot(client, "aa-bb-cc-dd-ee-01").status_code == 404
+    assert last(caplog) == "already-installed"
+    client.post("/reset/pve1")
+    assert boot(client, "aa-bb-cc-dd-ee-01").status_code == 200
+
+
+def test_boot_gate_bad_mac_400(client):
+    assert boot(client, "nope").status_code == 400
+
+
+def test_boot_gate_fails_closed(env, client, caplog):
+    (env / "state.json").write_text("{oops")
+    with caplog.at_level(logging.INFO):
+        assert boot(client, "aa-bb-cc-dd-ee-01").status_code == 404
+    assert last(caplog) == "state-error"
+    (env / "inv" / "hosts.yml").write_text("all: [")
+    assert boot(client, "aa-bb-cc-dd-ee-01").status_code == 404
+
+
+@pytest.mark.parametrize("mac", ["aa-bb-cc-dd-ee-01", "aa-bb-cc-dd-ee-02", "00-00-00-00-00-99"])
+def test_boot_gate_agrees_with_answer(client, mac):
+    # The gate must never say "install" for a host /answer refuses, nor the other way round.
+    g = boot(client, mac).status_code
+    a = post_answer(client, [mac.replace("-", ":")]).status_code
+    assert (g == 200) == (a == 200)

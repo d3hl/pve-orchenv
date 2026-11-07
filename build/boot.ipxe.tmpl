@@ -1,4 +1,12 @@
 #!ipxe
-kernel http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/vmlinuz ramdisk_size=16777216 rw quiet splash=silent proxmox-start-auto-installer
-initrd http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/initrd
-boot
+# Start the installer only when the answer service would serve this host: GET /boot/<mac> answers 200
+# exactly when POST /answer would. Unknown MAC, install: false, state installed, or any error: skip the
+# installer (it would only stop on a 404 answer) and leave iPXE so the firmware boots the local disk.
+imgfetch --name gate http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/boot/${netX/mac:hexhyp} || goto local
+imgfree gate
+kernel http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/vmlinuz ramdisk_size=16777216 rw quiet splash=silent proxmox-start-auto-installer || goto local
+initrd http://${BOOTSERVER_HOST}:${BOOTSERVER_HTTP_PORT}/initrd || goto local
+boot || goto local
+:local
+echo No install for ${netX/mac}: leaving iPXE, the firmware boots the next device (local disk)
+exit 0
